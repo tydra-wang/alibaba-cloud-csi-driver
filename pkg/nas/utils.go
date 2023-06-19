@@ -18,10 +18,12 @@ package nas
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -29,18 +31,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
-	"k8s.io/client-go/dynamic"
-
-	"errors"
-
 	aliyunep "github.com/aliyun/alibaba-cloud-sdk-go/sdk/endpoints"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	aliNas "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 )
 
 const (
@@ -510,25 +509,20 @@ func ParseMountFlags(mntOptions []string) (string, string) {
 	return "", ""
 }
 
-func createLosetupPv(fullPath string, volSizeBytes int64) error {
-	blockNum := volSizeBytes / (4 * 1024)
-	fileName := filepath.Join(fullPath, LoopImgFile)
-	if utils.IsFileExisting(fileName) {
-		log.Infof("createLosetupPv: image file is exist, just skip: %s", fileName)
+func createLosetupPv(dir string, size int64) error {
+	imgFile := filepath.Join(dir, LoopImgFile)
+	if utils.IsFileExisting(imgFile) {
+		log.Infof("createLosetupPv: skip creating existed image file: %s", imgFile)
 		return nil
 	}
-	imgCmd := fmt.Sprintf("dd if=/dev/zero of=%s bs=4k seek=%d count=0", fileName, blockNum)
-	_, err := utils.ValidateRun(imgCmd)
-	if err != nil {
+	if err := utils.CreateAndTruncateFile(imgFile, size); err != nil {
 		return err
 	}
-
-	formatCmd := fmt.Sprintf("mkfs.ext4 -F -m0 %s", fileName)
-	_, err = utils.ValidateRun(formatCmd)
-	if err != nil {
-		return err
+	output, err := exec.Command("mkfs.ext4", "-F", "-m0", imgFile).CombinedOutput()
+	if len(output) != 0 {
+		log.Infof("createLosetupPv: format image file: %s", string(output))
 	}
-	return nil
+	return err
 }
 
 // /var/lib/kubelet/pods/5e03c7f7-2946-4ee1-ad77-2efbc4fdb16c/volumes/kubernetes.io~csi/nas-f5308354-725a-4fd3-b613-0f5b384bd00e/mount
