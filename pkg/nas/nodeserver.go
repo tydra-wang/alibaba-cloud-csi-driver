@@ -30,7 +30,7 @@ import (
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/kubernetes-csi/drivers/pkg/csi-common"
+	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
@@ -38,12 +38,14 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	mountutils "k8s.io/mount-utils"
 )
 
 type nodeServer struct {
 	clientSet *kubernetes.Clientset
 	crdClient dynamic.Interface
 	*csicommon.DefaultNodeServer
+	mounter mountutils.Interface
 }
 
 // Options struct definition
@@ -117,6 +119,7 @@ func newNodeServer(d *NAS) *nodeServer {
 		clientSet:         GlobalConfigVar.KubeClient,
 		crdClient:         GlobalConfigVar.DynamicClient,
 		DefaultNodeServer: csicommon.NewDefaultNodeServer(d.driver),
+		mounter:           NewNasMounter(),
 	}
 }
 
@@ -352,7 +355,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 	// do losetup nas logical
 	if GlobalConfigVar.LosetupEnable && opt.MountType == LosetupType {
-		if err := mountLosetupPv(mountPath, opt, req.VolumeId); err != nil {
+		if err := mountLosetupPv(ns.mounter, mountPath, opt, req.VolumeId); err != nil {
 			log.Errorf("NodePublishVolume: mount losetup volume(%s) error %s", req.VolumeId, err.Error())
 			return nil, errors.New("NodePublishVolume, mount Losetup volume error with: " + err.Error())
 		}
@@ -382,7 +385,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return nil, errors.New("Cannot get poduid and cannot set volume limit: " + req.VolumeId)
 	}
 	//mount nas client
-	if err := DoMount(opt.FSType, opt.ClientType, opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, mountPath, req.VolumeId, podUID); err != nil {
+	if err := DoMount(ns.mounter, opt.FSType, opt.ClientType, opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, mountPath, req.VolumeId, podUID); err != nil {
 		log.Errorf("Nas, Mount Nfs error: %s", err.Error())
 		return nil, errors.New("Nas, Mount Nfs error:" + err.Error())
 	}
@@ -471,8 +474,7 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 		return &csi.NodeUnpublishVolumeResponse{}, nil
 	}
 
-	umntCmd := fmt.Sprintf("umount %s", mountPoint)
-	if _, err := utils.Run(umntCmd); err != nil {
+	if err := ns.mounter.Unmount(mountPoint); err != nil {
 		msg := fmt.Sprintf("Umount nfs %s is failed, err: %s", mountPoint, err.Error())
 		log.Error(msg)
 		return nil, errors.New(msg)
