@@ -24,8 +24,6 @@ import (
 	"io"
 	"io/fs"
 	"io/ioutil"
-	utilexec "k8s.io/utils/exec"
-	"k8s.io/utils/mount"
 	"net"
 	"net/http"
 	"os"
@@ -43,6 +41,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/go-ping/ping"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/options"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -56,9 +55,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	k8svol "k8s.io/kubernetes/pkg/volume"
 	k8sfs "k8s.io/kubernetes/pkg/volume/util/fs"
-
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/options"
 	k8smount "k8s.io/mount-utils"
+	utilexec "k8s.io/utils/exec"
+	"k8s.io/utils/mount"
 )
 
 // DefaultOptions used for global ak
@@ -295,16 +294,6 @@ func CreateDest(dest string) error {
 
 	if fi != nil && !fi.IsDir() {
 		return fmt.Errorf("%v already exist but it's not a directory", dest)
-	}
-	return nil
-}
-
-// CreateDestInHost create host dest directory
-func CreateDestInHost(dest string) error {
-	cmd := fmt.Sprintf("%s mkdir -p %s", NsenterCmd, dest)
-	_, err := Run(cmd)
-	if err != nil {
-		return err
 	}
 	return nil
 }

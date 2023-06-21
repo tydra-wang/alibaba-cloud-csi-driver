@@ -325,7 +325,7 @@ func createSubDir(mounter mountutils.Interface, nfsProtocol, nfsServer, nfsPath,
 
 	nasTmpPath := filepath.Join(NasTempMntPath, volumeID)
 	if mountInHost {
-		if err := utils.CreateDestInHost(nasTmpPath); err != nil {
+		if err := os.MkdirAll(nasTmpPath, os.ModePerm); err != nil {
 			log.Infof("Create nas tempPath is failed in host, tmpPath:%s, err: %s", nasTmpPath, err.Error())
 			return err
 		}
@@ -339,7 +339,7 @@ func createSubDir(mounter mountutils.Interface, nfsProtocol, nfsServer, nfsPath,
 			return err
 		}
 		subPath := path.Join(nasTmpPath, usePath)
-		if err := utils.CreateDestInHost(subPath); err != nil {
+		if err := os.MkdirAll(subPath, os.ModePerm); err != nil {
 			log.Infof("Create subPath is failed in host, subPath:%s, err:%s ", subPath, err.Error())
 			return err
 		}
