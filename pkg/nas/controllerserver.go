@@ -410,7 +410,12 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			cs.rateLimiter.Take()
 			// step5: Mount nfs server to localpath
 			opt := &Options{}
-			if !CheckNfsPathMounted(mountPoint, nfsPath) {
+			notMounted, err := cs.mounter.IsLikelyNotMountPoint(mountPoint)
+			if err != nil {
+				log.Errorf("check mount point %s: %v", mountPoint, err)
+				return nil, status.Errorf(codes.Internal, err.Error())
+			}
+			if notMounted {
 				//When subdirectories are mounted, determine whether to use eacClient
 				var cnfs *v1beta1.ContainerNetworkFileSystem
 				if len(nasVol.CnfsName) != 0 {
@@ -433,7 +438,13 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 					return nil, errors.New("CreateVolume: " + req.Name + ", Mount server: " + nfsServer + ", nfsPath: " + nfsPath + ", nfsVersion: " + nfsVersion + ", nfsOptions: " + nfsOptionsStr + ", mountPoint: " + mountPoint + ", with error: " + err.Error())
 				}
 			}
-			if !CheckNfsPathMounted(mountPoint, nfsPath) {
+
+			notMounted, err = cs.mounter.IsLikelyNotMountPoint(mountPoint)
+			if err != nil {
+				log.Errorf("check mount point %s: %v", mountPoint, err)
+				return nil, status.Errorf(codes.Internal, err.Error())
+			}
+			if notMounted {
 				return nil, errors.New("Check Mount server not mounted " + nfsServer)
 			}
 
@@ -455,7 +466,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			}
 
 			// step7: Unmount nfs server
-			if err := utils.Umount(mountPoint); err != nil {
+			if err := cs.mounter.Unmount(mountPoint); err != nil {
 				log.Errorf("Provision: %s, unmount nfs mountpoint %s failed with error %v", req.Name, mountPoint, err)
 				return nil, errors.New("unable to unmount nfs server: " + nfsServer)
 			}
@@ -712,10 +723,15 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 			log.Errorf("DeleteVolume: %s, Mount server: %s, nfsPath: %s, nfsVersion: %s, nfsOptions: %s, mountPoint: %s, with error: %s", req.VolumeId, nfsServer, nfsPath, nfsVersion, nfsOptions, mountPoint, err.Error())
 			return nil, fmt.Errorf("DeleteVolume: %s, Mount server: %s, nfsPath: %s, nfsVersion: %s, nfsOptions: %s, mountPoint: %s, with error: %s", req.VolumeId, nfsServer, nfsPath, nfsVersion, nfsOptions, mountPoint, err.Error())
 		}
-		if !CheckNfsPathMounted(mountPoint, nfsPath) {
+		notMounted, err := cs.mounter.IsLikelyNotMountPoint(mountPoint)
+		if err != nil {
+			log.Errorf("check mount point %s: %v", mountPoint, err)
+			return nil, status.Errorf(codes.Internal, err.Error())
+		}
+		if notMounted {
 			return nil, errors.New("Check Mount nfsserver fail " + nfsServer + " error with: ")
 		}
-		defer utils.Umount(mountPoint)
+		defer cs.mounter.Unmount(mountPoint)
 
 		// pvName is same with volumeId
 		pvName := filepath.Base(pvPath)
