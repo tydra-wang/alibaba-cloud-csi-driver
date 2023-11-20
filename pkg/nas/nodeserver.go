@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -404,7 +403,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return nil, errors.New("Cannot get poduid and cannot set volume limit: " + req.VolumeId)
 	}
 	//mount nas client
-	if err := DoMount(ns.mounter, opt.FSType, opt.ClientType, opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, mountPath, req.VolumeId, podUID); err != nil {
+	if err := doMount(ns.mounter, opt.FSType, opt.ClientType, opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, mountPath, req.VolumeId, podUID); err != nil {
 		log.Errorf("Nas, Mount Nfs error: %s", err.Error())
 		return nil, errors.New("Nas, Mount Nfs error:" + err.Error())
 	}
@@ -579,7 +578,7 @@ func (ns *nodeServer) LosetupExpandVolume(req *csi.NodeExpandVolumeRequest) erro
 			failedFile := filepath.Join(nfsPath, Resize2fsFailedFilename)
 			if !utils.IsFileExisting(failedFile) {
 				// path/to/whatever does not exist
-				if werr := ioutil.WriteFile(failedFile, ([]byte)(""), 0644); werr != nil {
+				if werr := os.WriteFile(failedFile, ([]byte)(""), 0644); werr != nil {
 					return fmt.Errorf("NodeExpandVolume: write file err %s, resizefs err: %s", werr, err)
 				}
 			}

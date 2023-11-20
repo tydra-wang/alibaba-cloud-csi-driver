@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -82,27 +81,21 @@ type RoleAuth struct {
 	Code            string
 }
 
-// DoMount execute the mount command for nas dir
-func DoMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsServer, nfsPath, nfsVers, mountOptions, mountPoint, volumeID, podUID string) error {
-	if !utils.IsFileExisting(mountPoint) {
-		_ = CreateDest(mountPoint)
-	}
+func init() {
+	_ = os.MkdirAll(NasTempMntPath, os.ModePerm)
+}
 
-	notMounted, err := mounter.IsLikelyNotMountPoint(mountPoint)
-	if err != nil {
-		return err
-	}
-	if !notMounted {
-		log.Infof("%s already mounted", mountPoint)
-		return nil
-	}
-
+// doMount execute the mount command for nas dir
+func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsServer, nfsPath, nfsVers, mountOptions, mountPoint, volumeID, podUID string) error {
 	source := fmt.Sprintf("%s:%s", nfsServer, nfsPath)
 	var combinedOptions []string
 	if mountOptions != "" {
 		combinedOptions = append(combinedOptions, mountOptions)
 	}
-
+	var (
+		mountFstype    string
+		isPathNotFound func(error) bool
+	)
 	switch clientType {
 	case EFCClient:
 		combinedOptions = append(combinedOptions, "efc", fmt.Sprintf("bindtag=%s", volumeID), fmt.Sprintf("client_owner=%s", podUID))
@@ -113,63 +106,63 @@ func DoMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsS
 		default:
 			return errors.New("EFC Client don't support this storage type:" + fsType)
 		}
-		err = mounter.Mount(source, mountPoint, "alinas", combinedOptions)
+		mountFstype = "alinas"
+		// err = mounter.Mount(source, mountPoint, "alinas", combinedOptions)
+		isPathNotFound = func(err error) bool {
+			return strings.Contains(err.Error(), "Failed to bind mount")
+		}
 	case NativeClient:
 		switch fsType {
 		case "cpfs":
 		default:
 			return errors.New("Native Client don't support this storage type:" + fsType)
 		}
-		err = mounter.Mount(source, mountPoint, "cpfs", combinedOptions)
+		mountFstype = "cpfs"
 	default:
 		//NFS Mount(Capacdity/Performance Extreme Nas、Cpfs2.0, AliNas)
 		versStr := fmt.Sprintf("vers=%s", nfsVers)
 		if !strings.Contains(mountOptions, versStr) {
 			combinedOptions = append(combinedOptions, versStr)
 		}
-		//nfsProtocol: cpfs-nfs/nfs/alinas
-		err = mounter.Mount(source, mountPoint, nfsProtocol, combinedOptions)
-		//try mount nfsPath is successfully.
-		if err == nil {
-			break
+		mountFstype = nfsProtocol
+		isPathNotFound = func(err error) bool {
+			return strings.Contains(err.Error(), "reason given by server: No such file or directory") || strings.Contains(err.Error(), "access denied by server while mounting")
 		}
-		//mount root-path is failed, return error
-		if nfsPath == "/" {
-			break
-		}
-		//Other errors
-		if !strings.Contains(err.Error(), "reason given by server: No such file or directory") && !strings.Contains(err.Error(), "access denied by server while mounting") {
-			break
-		}
-		//mount sub-path is failed, if subpath is not exist or cpfs don't output subpath
-		if err := createSubDir(mounter, nfsProtocol, nfsServer, nfsPath, combinedOptions, volumeID); err != nil {
-			log.Errorf("DoMount: Create subpath is failed, err: %s", err.Error())
-			return err
-		}
-		err = mounter.Mount(source, mountPoint, nfsProtocol, combinedOptions)
 	}
+	err := mounter.Mount(source, mountPoint, mountFstype, combinedOptions)
+	if err == nil {
+		return nil
+	}
+	if isPathNotFound == nil || !isPathNotFound(err) {
+		return err
+	}
+
+	// try to create subpath
+	rootPath := "/"
+	if fsType == "cpfs" || mountFstype == MountProtocolCPFSNFS || strings.Contains(nfsServer, "extreme.nas.aliyuncs.com") {
+		rootPath = "/share"
+	}
+	relPath, relErr := filepath.Rel(rootPath, nfsPath)
+	if relErr != nil || relPath == "." {
+		return err
+	}
+	rootSource := fmt.Sprintf("%s:%s", nfsServer, rootPath)
+	log.Infof("trying to create subpath %s", rootSource)
+	tmpPath, err := os.MkdirTemp(NasTempMntPath, volumeID+"_")
 	if err != nil {
 		return err
 	}
-	log.WithFields(log.Fields{"source": source, "target": mountPoint, "client": clientType}).Info("mounted successfully")
-	return nil
-}
-
-// CreateDest create the target
-func CreateDest(dest string) error {
-	fi, err := os.Lstat(dest)
-	if os.IsNotExist(err) {
-		if err := os.MkdirAll(dest, 0777); err != nil {
-			return err
-		}
-	} else if err != nil {
+	defer os.Remove(tmpPath)
+	if err := mounter.Mount(rootSource, tmpPath, mountFstype, combinedOptions); err != nil {
 		return err
 	}
-
-	if fi != nil && !fi.IsDir() {
-		return fmt.Errorf("%v already exist but it's not a directory", dest)
+	if err := os.MkdirAll(filepath.Join(tmpPath, relPath), os.ModePerm); err != nil {
+		return err
 	}
-	return nil
+	if err := cleanupMountpoint(mounter, tmpPath); err != nil {
+		log.Errorf("failed to cleanup tmp mountpoint %s: %v", tmpPath, err)
+	}
+	return mounter.Mount(source, mountPoint, mountFstype, combinedOptions)
 }
 
 // GetNfsDetails get nfs server's details
@@ -254,48 +247,6 @@ func SetNasEndPoint(regionID string) {
 	if ep := os.Getenv("NAS_ENDPOINT"); ep != "" {
 		aliyunep.AddEndpointMapping(regionID, "Nas", ep)
 	}
-}
-
-func createSubDir(mounter mountutils.Interface, nfsProtocol, nfsServer, nfsPath string, nfsOptions []string, volumeID string) error {
-	rootPath := "/"
-	usePath := nfsPath
-	//The root directory of cpfs-nfs and extreme NAS is /share
-	if nfsProtocol == MountProtocolCPFSNFS || strings.Contains(nfsServer, "extreme.nas.aliyuncs.com") {
-		//1.No need to deal with the case where nfsPath only beginning with /share or /share/
-		//2.No need to deal with the case where nfspath does not contain /share or /share/ at the beginning
-		//3.Need to deal with the case where nfsPath is /share/subpath
-		if strings.HasPrefix(nfsPath, "/share/") && len(nfsPath) > len("/share/") {
-			rootPath = "/share/"
-			usePath = nfsPath[len("/share/"):]
-		}
-	}
-
-	nasTmpPath := filepath.Join(NasTempMntPath, volumeID)
-	if err := utils.CreateDest(nasTmpPath); err != nil {
-		log.Infof("Create nas tempPath is failed, tmpPath:%s, err: %s", nasTmpPath, err.Error())
-		return err
-	}
-	notMounted, err := mounter.IsLikelyNotMountPoint(nasTmpPath)
-	if err != nil {
-		return fmt.Errorf("check mountpoint %s: %w", nasTmpPath, err)
-	}
-	if !notMounted {
-		if err := mounter.Unmount(nasTmpPath); err != nil {
-			return err
-		}
-	}
-	err = mounter.Mount(fmt.Sprintf("%s:%s", nfsServer, rootPath), nasTmpPath, nfsProtocol, nfsOptions)
-	if err != nil {
-		log.Errorf("Mount rootPath is failed, rootPath:%s, err:%s", rootPath, err.Error())
-		return err
-	}
-	subPath := path.Join(nasTmpPath, usePath)
-	if err := utils.CreateDest(subPath); err != nil {
-		log.Infof("Create subPath is failed, subPath:%s, err: %s", subPath, err.Error())
-		return err
-	}
-	log.Infof("Create subPath is successfully, nfsPath:%s, subPath:%s", nfsPath, path.Join(nasTmpPath, usePath))
-	return mounter.Unmount(nasTmpPath)
 }
 
 func setNasVolumeCapacity(nfsServer, nfsPath string, volSizeBytes int64) error {
@@ -420,7 +371,7 @@ func mountLosetupPv(mounter mountutils.Interface, mountPoint string, opt *Option
 		return fmt.Errorf("mountLosetupPv: create nfs mountPath error %s ", err.Error())
 	}
 	//mount nas to use losetup dev
-	err = DoMount(mounter, "nas", "nfsclient", opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, nfsPath, volumeID, podID)
+	err = doMount(mounter, "nas", "nfsclient", opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, nfsPath, volumeID, podID)
 	if err != nil {
 		return fmt.Errorf("mountLosetupPv: mount losetup volume failed: %s", err.Error())
 	}
