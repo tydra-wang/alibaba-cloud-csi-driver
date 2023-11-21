@@ -44,6 +44,7 @@ type NasClientV2 struct {
 	client  *sdk.Client
 }
 
+// TODO: ensure idempotence
 func (c *NasClientV2) CreateDir(req *sdk.CreateDirRequest) error {
 	c.limiter.Take()
 	resp, err := c.client.CreateDir(req)
