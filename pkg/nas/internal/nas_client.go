@@ -1,6 +1,7 @@
 package internal
 
 import (
+	sdkv1 "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
 	"go.uber.org/ratelimit"
 )
 
@@ -26,4 +27,6 @@ func (fac *NasClient) V2(region string) (*NasClientV2, error) {
 	}, nil
 }
 
-// func (fac *NasClient) V1(region string)
+func (fac *NasClient) V1(region string) (*sdkv1.Client, error) {
+	return newNasClientV1(region)
+}

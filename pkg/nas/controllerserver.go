@@ -130,12 +130,6 @@ type nasVolumeArgs struct {
 	MountProtocol   string           `json:"mountProtocol"`
 }
 
-// used by check pvc is processed
-var pvcProcessSuccess = map[string]*csi.Volume{}
-var storageClassServerPos = map[string]int{}
-var pvcFileSystemIDMap = map[string]string{}
-var pvcMountTargetMap = map[string]string{}
-
 // NewControllerServer is to create controller server
 func NewControllerServer(d *csicommon.CSIDriver, client *aliNas.Client, region, limit string, cfg *restclient.Config) csi.ControllerServer {
 	intLimit, err := strconv.Atoi(limit)
@@ -632,7 +626,7 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	}
 	storageclass, err := cs.client.StorageV1().StorageClasses().Get(context.Background(), pvInfo.Spec.StorageClassName, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("DeleteVolume: Volume: %s, reqeust storageclass error: %s", req.VolumeId, err.Error())
+		return nil, fmt.Errorf("DeleteVolume: Volume: %s, request storageclass error: %s", req.VolumeId, err.Error())
 	}
 
 	regionID := ""
