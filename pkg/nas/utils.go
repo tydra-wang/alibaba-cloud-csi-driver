@@ -67,10 +67,6 @@ type RoleAuth struct {
 	Code            string
 }
 
-func init() {
-	_ = os.MkdirAll(NasTempMntPath, os.ModePerm)
-}
-
 // doMount execute the mount command for nas dir
 func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsServer, nfsPath, nfsVers, mountOptions, mountPoint, volumeID, podUID string) error {
 	source := fmt.Sprintf("%s:%s", nfsServer, nfsPath)
@@ -123,7 +119,6 @@ func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsS
 		return err
 	}
 
-	// try to create subpath
 	rootPath := "/"
 	if fsType == "cpfs" || mountFstype == MountProtocolCPFSNFS || strings.Contains(nfsServer, "extreme.nas.aliyuncs.com") {
 		rootPath = "/share"
@@ -134,6 +129,7 @@ func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsS
 	}
 	rootSource := fmt.Sprintf("%s:%s", nfsServer, rootPath)
 	log.Infof("trying to create subpath %s", rootSource)
+	_ = os.MkdirAll(NasTempMntPath, os.ModePerm)
 	tmpPath, err := os.MkdirTemp(NasTempMntPath, volumeID+"_")
 	if err != nil {
 		return err

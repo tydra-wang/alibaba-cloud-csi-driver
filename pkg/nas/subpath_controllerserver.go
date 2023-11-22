@@ -27,7 +27,6 @@ import (
 	sdk "github.com/alibabacloud-go/nas-20170626/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/sirupsen/logrus"
@@ -47,7 +46,6 @@ const (
 )
 
 type subpathControllerServer struct {
-	*csicommon.DefaultControllerServer
 	fakeProvision           bool
 	enableDeletionFinalizer bool
 	crdClient               dynamic.Interface
@@ -55,13 +53,12 @@ type subpathControllerServer struct {
 	nasClient               *internal.NasClientV2
 }
 
-func newSubpathControllerServer(defaultServer *csicommon.DefaultControllerServer) (*subpathControllerServer, error) {
+func newSubpathControllerServer() (*subpathControllerServer, error) {
 	nasClient, err := GlobalConfigVar.NasClientFactory.V2(GlobalConfigVar.Region)
 	if err != nil {
 		return nil, err
 	}
 	return &subpathControllerServer{
-		DefaultControllerServer: defaultServer,
 		fakeProvision:           GlobalConfigVar.NasFakeProvision,
 		enableDeletionFinalizer: GlobalConfigVar.EnableDeletionFinalzier,
 		crdClient:               GlobalConfigVar.DynamicClient,
@@ -188,7 +185,7 @@ func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.Cr
 }
 
 func (cs *subpathControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
-	pv := ctx.Value("PersistentVolume").(*corev1.PersistentVolume)
+	pv := ctx.Value(contextPVKey).(*corev1.PersistentVolume)
 	attributes := pv.Spec.CSI.VolumeAttributes
 	var (
 		filesystemId      string
@@ -263,7 +260,7 @@ func (cs *subpathControllerServer) DeleteVolume(ctx context.Context, req *csi.De
 }
 
 func (cs *subpathControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
-	pv := ctx.Value("PersistentVolume").(*corev1.PersistentVolume)
+	pv := ctx.Value(contextPVKey).(*corev1.PersistentVolume)
 	attributes := pv.Spec.CSI.VolumeAttributes
 	var (
 		filesystemId string
