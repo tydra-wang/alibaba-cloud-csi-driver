@@ -27,7 +27,6 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	aliNas "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
@@ -101,20 +100,18 @@ type nasVolumeArgs struct {
 }
 
 type filesystemControllerServer struct {
-	*csicommon.DefaultControllerServer
 	nasClientFactory *internal.NasClientFactory
 	region           string
 	client           kubernetes.Interface
 	recorder         record.EventRecorder
 }
 
-func newFilesystemControllerServer(defaultServer *csicommon.DefaultControllerServer) *filesystemControllerServer {
+func newFilesystemControllerServer() *filesystemControllerServer {
 	return &filesystemControllerServer{
-		DefaultControllerServer: defaultServer,
-		nasClientFactory:        GlobalConfigVar.NasClientFactory,
-		region:                  GlobalConfigVar.Region,
-		client:                  GlobalConfigVar.KubeClient,
-		recorder:                GlobalConfigVar.EventRecorder,
+		nasClientFactory: GlobalConfigVar.NasClientFactory,
+		region:           GlobalConfigVar.Region,
+		client:           GlobalConfigVar.KubeClient,
+		recorder:         GlobalConfigVar.EventRecorder,
 	}
 }
 
@@ -440,7 +437,7 @@ func (cs *filesystemControllerServer) getNasVolumeOptions(req *csi.CreateVolumeR
 }
 
 func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
-	pvInfo := ctx.Value("PersistentVolume").(*corev1.PersistentVolume)
+	pvInfo := ctx.Value(contextPVKey).(*corev1.PersistentVolume)
 
 	var fileSystemID, deleteVolume, nfsServer string
 	if value, ok := pvInfo.Spec.CSI.VolumeAttributes["fileSystemId"]; ok {

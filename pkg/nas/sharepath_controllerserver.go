@@ -21,7 +21,6 @@ import (
 	"path/filepath"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
@@ -32,14 +31,12 @@ import (
 )
 
 type sharepathControllerServer struct {
-	*csicommon.DefaultControllerServer
 	crdClient dynamic.Interface
 }
 
-func newSharepathControllerServer(defaultServer *csicommon.DefaultControllerServer) *sharepathControllerServer {
+func newSharepathControllerServer() *sharepathControllerServer {
 	return &sharepathControllerServer{
-		DefaultControllerServer: defaultServer,
-		crdClient:               GlobalConfigVar.DynamicClient,
+		crdClient: GlobalConfigVar.DynamicClient,
 	}
 }
 
