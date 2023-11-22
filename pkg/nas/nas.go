@@ -22,11 +22,11 @@ import (
 	"strconv"
 	"strings"
 
-	aliNas "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/dadi"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/options"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/version"
@@ -35,8 +35,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/record"
 )
 
 const (
@@ -52,20 +52,22 @@ var (
 
 // GlobalConfig save global values for plugin
 type GlobalConfig struct {
-	Region             string
-	NasTagEnable       bool
-	ADControllerEnable bool
-	MetricEnable       bool
-	NasFakeProvision   bool
-	RunTimeClass       string
-	NodeID             string
-	NodeIP             string
-	ClusterID          string
-	LosetupEnable      bool
-	NasPortCheck       bool
-	KubeClient         *kubernetes.Clientset
-	DynamicClient      dynamic.Interface
-	NasClient          *aliNas.Client
+	Region                  string
+	NasTagEnable            bool
+	ADControllerEnable      bool
+	MetricEnable            bool
+	NasFakeProvision        bool
+	RunTimeClass            string
+	NodeID                  string
+	NodeIP                  string
+	ClusterID               string
+	LosetupEnable           bool
+	NasPortCheck            bool
+	KubeClient              *kubernetes.Clientset
+	DynamicClient           dynamic.Interface
+	NasClientFactory        *internal.NasClientFactory
+	EventRecorder           record.EventRecorder
+	EnableDeletionFinalzier bool
 }
 
 // NAS the NAS object
@@ -94,24 +96,33 @@ func NewDriver(nodeID, endpoint, serviceType string) *NAS {
 	})
 
 	// Global Configs Set
-	cfg := GlobalConfigSet(serviceType)
-
-	d.driver = csiDriver
+	GlobalConfigSet(serviceType)
 
 	regionID := os.Getenv("REGION_ID")
 	if len(regionID) == 0 {
 		regionID, _ = utils.GetMetaData(RegionTag)
 	}
-	ac := utils.GetAccessControl()
-	c := newNasClient(ac, regionID)
-	limit := os.Getenv("NAS_LIMIT_PERSECOND")
-	if limit == "" {
-		limit = "2"
-	}
-	d.controllerServer = NewControllerServer(d.driver, c, regionID, limit, cfg)
-
-	GlobalConfigVar.NasClient = c
 	GlobalConfigVar.Region = regionID
+
+	limit := os.Getenv("NAS_LIMIT_PERSECOND")
+	nasQps, err := strconv.Atoi(limit)
+	if err != nil {
+		log.Errorf("invalid NAS_LIMIT_PERSECOND %q", limit)
+		nasQps = 2
+	}
+	GlobalConfigVar.NasClientFactory = internal.NewNasClientFactory(nasQps)
+	GlobalConfigVar.EventRecorder = utils.NewEventRecorder()
+	if enableDeletionFinalzier, err := strconv.ParseBool(os.Getenv("ENABLE_SUBPATH_DELETION_FINALZIER")); err == nil {
+		GlobalConfigVar.EnableDeletionFinalzier = enableDeletionFinalzier
+	} else {
+		GlobalConfigVar.EnableDeletionFinalzier = true
+	}
+
+	d.driver = csiDriver
+	d.controllerServer, err = NewControllerServer(d.driver)
+	if err != nil {
+		log.Fatalf("failed to init nas controller server: %v", err)
+	}
 	return d
 }
 
@@ -121,7 +132,7 @@ func (d *NAS) Run() {
 }
 
 // GlobalConfigSet set global config
-func GlobalConfigSet(serviceType string) *restclient.Config {
+func GlobalConfigSet(serviceType string) {
 	// Global Configs Set
 	cfg, err := clientcmd.BuildConfigFromFlags(options.MasterURL, options.Kubeconfig)
 	if err != nil {
@@ -237,5 +248,4 @@ func GlobalConfigSet(serviceType string) *restclient.Config {
 	GlobalConfigVar.NasPortCheck = doNfsPortCheck
 
 	log.Infof("NAS Global Config: %v", GlobalConfigVar)
-	return cfg
 }

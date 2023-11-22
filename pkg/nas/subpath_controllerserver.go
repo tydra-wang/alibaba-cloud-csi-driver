@@ -48,11 +48,26 @@ const (
 
 type subpathControllerServer struct {
 	*csicommon.DefaultControllerServer
-	skipCreatingSubpath     bool
+	fakeProvision           bool
 	enableDeletionFinalizer bool
 	crdClient               dynamic.Interface
 	kubeClient              kubernetes.Interface
 	nasClient               *internal.NasClientV2
+}
+
+func newSubpathControllerServer(defaultServer *csicommon.DefaultControllerServer) (*subpathControllerServer, error) {
+	nasClient, err := GlobalConfigVar.NasClientFactory.V2(GlobalConfigVar.Region)
+	if err != nil {
+		return nil, err
+	}
+	return &subpathControllerServer{
+		DefaultControllerServer: defaultServer,
+		fakeProvision:           GlobalConfigVar.NasFakeProvision,
+		enableDeletionFinalizer: GlobalConfigVar.EnableDeletionFinalzier,
+		crdClient:               GlobalConfigVar.DynamicClient,
+		kubeClient:              GlobalConfigVar.KubeClient,
+		nasClient:               nasClient,
+	}, nil
 }
 
 func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -135,7 +150,7 @@ func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.Cr
 	if filesystemType != internal.FilesystemTypeStandard {
 		return resp, nil
 	}
-	if cs.skipCreatingSubpath {
+	if cs.fakeProvision {
 		logrus.Infof("skip creating subpath directory for %s", req.Name)
 		return resp, nil
 	}
@@ -211,7 +226,7 @@ func (cs *subpathControllerServer) DeleteVolume(ctx context.Context, req *csi.De
 		}
 	}
 	if !cs.enableDeletionFinalizer {
-		logrus.Warn("deletion finalizer not enabled, skip subpath deletion")
+		logrus.Warnf("deletion finalizer not enabled, skip subpath deletion for %s", req.VolumeId)
 		return &csi.DeleteVolumeResponse{}, nil
 	}
 	// Patch finalizer on PV if need delete or archive subpath. The true deletion/archiving will be executed

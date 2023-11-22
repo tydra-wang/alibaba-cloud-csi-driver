@@ -31,32 +31,91 @@ import (
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
-	"go.uber.org/ratelimit"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
-	mountutils "k8s.io/mount-utils"
+)
+
+const (
+	ProtocolType    = "protocolType"
+	FileSystemType  = "fileSystemType"
+	EncryptType     = "encryptType"
+	SnapshotID      = "snapshotID"
+	StorageType     = "storageType"
+	ZoneID          = "zoneId"
+	DESCRIPTION     = "description"
+	ZoneIDTag       = "zone-id"
+	NetworkType     = "networkType"
+	VpcID           = "vpcId"
+	VSwitchID       = "vSwitchId"
+	AccessGroupName = "accessGroupName"
+	RegionID        = "regionId"
+	CnHangzhouFin   = "cn-hangzhou-finance"
+	DeleteVolume    = "deleteVolume"
+	// NASTAGKEY1 tag
+	NASTAGKEY1 = "k8s.aliyun.com"
+	// NASTAGVALUE1 value
+	NASTAGVALUE1 = "true"
+	// NASTAGKEY2 key
+	NASTAGKEY2 = "createdby"
+	// NASTAGVALUE2 value
+	NASTAGVALUE2 = "alibabacloud-csi-plugin"
+	// NASTAGKEY3 key
+	NASTAGKEY3 = "ack.aliyun.com"
+	// AddDefaultTagsError means that the add nas default tags error
+	AddDefaultTagsError string = "AddDefaultTagsError"
+	// LosetupType tag
+	LosetupType = "losetup"
+	// SkipMountType tag
+	SkipMountType = "skipmount"
+
+	allowVolumeExpansion = "allowVolumeExpansion"
+	csiAlibabaCloudName  = "csi.alibabacloud.com"
 )
 
 var pvcMountTargetMap = map[string]string{}
 var pvcFileSystemIDMap = map[string]string{}
 var pvcProcessSuccess = map[string]*csi.Volume{}
 
+// Alibaba Cloud nas volume parameters
+type nasVolumeArgs struct {
+	VolumeAs        string           `json:"volumeAs"`
+	ProtocolType    string           `json:"protocolType"`
+	StorageType     string           `json:"storageType"`
+	FileSystemType  string           `json:"fileSystemType"`
+	Capacity        requests.Integer `json:"capacity"`
+	EncryptType     string           `json:"encryptType"`
+	SnapshotID      string           `json:"snapshotID"`
+	RegionID        string           `json:"regionID"`
+	ZoneID          string           `json:"zoneId"`
+	Description     string           `json:"description"`
+	NetworkType     string           `json:"networkType"`
+	VpcID           string           `json:"vpcId"`
+	VSwitchID       string           `json:"vSwitchId"`
+	AccessGroupName string           `json:"accessGroupName"`
+	DeleteVolume    bool             `json:"deleteVolume"`
+}
+
 type filesystemControllerServer struct {
 	*csicommon.DefaultControllerServer
-	nasClient   *internal.NasClient
-	region      string
-	client      kubernetes.Interface
-	crdClient   dynamic.Interface
-	recorder    record.EventRecorder
-	rateLimiter ratelimit.Limiter
-	mounter     mountutils.Interface
-	locks       *utils.VolumeLocks
+	nasClientFactory *internal.NasClientFactory
+	region           string
+	client           kubernetes.Interface
+	recorder         record.EventRecorder
+}
+
+func newFilesystemControllerServer(defaultServer *csicommon.DefaultControllerServer) *filesystemControllerServer {
+	return &filesystemControllerServer{
+		DefaultControllerServer: defaultServer,
+		nasClientFactory:        GlobalConfigVar.NasClientFactory,
+		region:                  GlobalConfigVar.Region,
+		client:                  GlobalConfigVar.KubeClient,
+		recorder:                GlobalConfigVar.EventRecorder,
+	}
 }
 
 func (cs *filesystemControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -104,7 +163,7 @@ func (cs *filesystemControllerServer) CreateVolume(ctx context.Context, req *csi
 	if len(nasVol.RegionID) == 0 {
 		nasVol.RegionID = GlobalConfigVar.Region
 	}
-	nasClient, err := cs.nasClient.V1(nasVol.RegionID)
+	nasClient, err := cs.nasClientFactory.V1(nasVol.RegionID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "init nas client: %v", err)
 	}
@@ -412,7 +471,7 @@ func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi
 		regionID = GlobalConfigVar.Region
 	}
 
-	nasClient, err := cs.nasClient.V1(regionID)
+	nasClient, err := cs.nasClientFactory.V1(regionID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "init nas client: %v", err)
 	}
@@ -428,7 +487,7 @@ func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi
 		describeMountTargetRequest.MountTargetDomain = nfsServer
 		_, err := nasClient.DescribeMountTargets(describeMountTargetRequest)
 		if err != nil {
-			if strings.Contains(err.Error(), "InvalidMountTarget.NotFound") {
+			if isMountTargetNotFoundError(err) {
 				log.Infof("DeleteVolume: Volume %s MountTarget %s already delete", req.VolumeId, nfsServer)
 				isMountTargetDelete = true
 			}
@@ -470,4 +529,9 @@ func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi
 	// remove the pvc process mapping if exist
 	delete(pvcProcessSuccess, req.VolumeId)
 	return &csi.DeleteVolumeResponse{}, nil
+}
+
+func (cs *filesystemControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+	log.Warn("skip expansion for volume as filesystem")
+	return &csi.ControllerExpandVolumeResponse{CapacityBytes: req.CapacityRange.RequiredBytes}, nil
 }

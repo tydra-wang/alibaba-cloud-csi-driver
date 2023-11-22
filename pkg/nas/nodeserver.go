@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +58,7 @@ type Options struct {
 	ModeType      string `json:"modeType"`
 	Options       string `json:"options"`
 	MountType     string `json:"mountType"`
+	LoopImageSize int    `json:"loopImageSize"`
 	LoopLock      string `json:"loopLock"`
 	MountProtocol string `json:"mountProtocol"`
 	ClientType    string `json:"clientType"`
@@ -183,10 +185,10 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return nil, err
 	}
 
-	if !ns.locks.TryAcquire(mountPath) {
-		return nil, status.Errorf(codes.Aborted, "There is already an operation for %s", mountPath)
+	if !ns.locks.TryAcquire(req.VolumeId) {
+		return nil, status.Errorf(codes.Aborted, "There is already an operation for %s", req.VolumeId)
 	}
-	defer ns.locks.Release(mountPath)
+	defer ns.locks.Release(req.VolumeId)
 	notMounted, err := ns.mounter.IsLikelyNotMountPoint(mountPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -226,6 +228,12 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			opt.MountType = value
 		} else if key == "looplock" {
 			opt.LoopLock = value
+		} else if key == "loopImageSize" {
+			size, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid loopImageSize: %q", value)
+			}
+			opt.LoopImageSize = size
 		} else if key == "containernetworkfilesystem" {
 			cnfsName = value
 		} else if key == strings.ToLower(MountProtocolTag) {
@@ -477,10 +485,10 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	}
 
 	targetPath := req.TargetPath
-	if !ns.locks.TryAcquire(targetPath) {
-		return nil, status.Errorf(codes.Aborted, "There is already an operation for %s", targetPath)
+	if !ns.locks.TryAcquire(req.VolumeId) {
+		return nil, status.Errorf(codes.Aborted, "There is already an operation for %s", req.VolumeId)
 	}
-	defer ns.locks.Release(targetPath)
+	defer ns.locks.Release(req.VolumeId)
 
 	if err := cleanupMountpoint(ns.mounter, targetPath); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to unmount %s: %v", targetPath, err)
