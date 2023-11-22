@@ -70,6 +70,7 @@ func newSubpathControllerServer() (*subpathControllerServer, error) {
 func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	// parse parameters
 	parameters := req.Parameters
+	capacity := req.GetCapacityRange().GetRequiredBytes()
 	var (
 		path           string
 		filesystemId   string
@@ -120,6 +121,9 @@ func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.Cr
 	volumeContext["volumeAs"] = "subpath"
 	volumeContext["path"] = path
 	if mountType := parameters["mountType"]; mountType != "" {
+		if mountType == "losetup" {
+			volumeContext["loopImageSize"] = strconv.FormatInt(capacity, 10)
+		}
 		volumeContext["mountType"] = mountType
 	}
 	if mode := parameters["mode"]; mode != "" {
@@ -134,7 +138,6 @@ func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.Cr
 		volumeContext["options"] = options
 	}
 
-	capacity := req.GetCapacityRange().GetRequiredBytes()
 	resp := &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      req.Name,
