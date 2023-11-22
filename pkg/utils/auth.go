@@ -30,26 +30,32 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"github.com/aliyun/alibaba-cloud-sdk-go/sdk"
-	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth"
-	cre "github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials"
-	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials/provider"
-	"github.com/emirpasic/gods/sets/hashset"
-	oidc "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/auth"
-	log "github.com/sirupsen/logrus"
-	"google.golang.org/grpc/credentials"
-	"io/ioutil"
 	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/alibabacloud-go/tea/tea"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth"
+	cre "github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials/provider"
+	crev2 "github.com/aliyun/credentials-go/credentials"
+	"github.com/emirpasic/gods/sets/hashset"
+	oidc "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/auth"
+	log "github.com/sirupsen/logrus"
+	"google.golang.org/grpc/credentials"
 )
 
 const (
 	// ConfigPath the secret mount file
 	ConfigPath = "/var/addon/token-config"
+
+	addonTokenExpirationFormat = "2006-01-02T15:04:05Z"
+	addonTokenExpirationScale  = 0.9
 )
 
 // AKInfo access key info
@@ -87,6 +93,9 @@ type ManageTokens struct {
 	RoleAccessKeySecret string
 	// RoleArn key
 	RoleArn string
+
+	// expire time
+	expireAt time.Time
 }
 
 // KeyPairArtifacts is cert struct
@@ -266,7 +275,6 @@ func GetAccessControl() AccessControl {
 	acStsToken := getStsToken()
 	log.Info("Get AK: use ECS RamRole Token")
 	return acStsToken
-
 }
 
 var oidcProvider oidc.Provider
@@ -382,7 +390,7 @@ func getStsToken() AccessControl {
 func getManagedToken() (tokens ManageTokens) {
 	var akInfo AKInfo
 	if _, err := os.Stat(ConfigPath); err == nil {
-		encodeTokenCfg, err := ioutil.ReadFile(ConfigPath)
+		encodeTokenCfg, err := os.ReadFile(ConfigPath)
 		if err != nil {
 			log.Errorf("failed to read token config, err: %v", err)
 			return ManageTokens{}
@@ -410,8 +418,7 @@ func getManagedToken() (tokens ManageTokens) {
 			log.Errorf("failed to decode token, err: %v", err)
 			return ManageTokens{}
 		}
-		layout := "2006-01-02T15:04:05Z"
-		t, err := time.Parse(layout, akInfo.Expiration)
+		t, err := time.Parse(addonTokenExpirationFormat, akInfo.Expiration)
 		if err != nil {
 			log.Errorf("Parse expiration error: %s", err.Error())
 		}
@@ -587,7 +594,7 @@ func NewClientTLSFromFile(serverName, caFile, certFile, keyFile string) (credent
 
 	// Create a certificate pool from the certificate authority
 	certPool := x509.NewCertPool()
-	ca, err := ioutil.ReadFile(caFile)
+	ca, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("could not read ca certificate: %s", err)
 	}
@@ -616,7 +623,7 @@ func NewServerTLSFromFile(caFile, certFile, keyFile string) (credentials.Transpo
 
 	// Create a certificate pool from the certificate authority
 	certPool := x509.NewCertPool()
-	ca, err := ioutil.ReadFile(caFile)
+	ca, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("could not read ca certificate: %s", err)
 	}
@@ -652,4 +659,105 @@ func getCredentialAK() AccessControl {
 	}
 	config := sdk.NewConfig().WithScheme(scheme)
 	return AccessControl{Config: config, Credential: credential, UseMode: Credential}
+}
+
+type managedAddonTokenCredv2 struct {
+	sync.Mutex
+	token        *ManageTokens
+	lastUpdateAt time.Time
+	scale        float64
+}
+
+func newManagedAddonTokenCredv2() *managedAddonTokenCredv2 {
+	return &managedAddonTokenCredv2{
+		scale: addonTokenExpirationScale,
+	}
+}
+
+func (cred *managedAddonTokenCredv2) needUpdate() bool {
+	if cred.token == nil {
+		return true
+	}
+	duration := time.Since(cred.lastUpdateAt)
+	expiration := cred.token.expireAt.Sub(cred.lastUpdateAt)
+	return duration >= time.Duration(float64(expiration)*cred.scale)
+}
+
+func (cred *managedAddonTokenCredv2) updateAndGet() ManageTokens {
+	cred.Lock()
+	defer cred.Unlock()
+	if cred.needUpdate() {
+		tokens := getManagedToken()
+		cred.token = &tokens
+		cred.lastUpdateAt = time.Now()
+	}
+	return *cred.token
+}
+
+func (cred *managedAddonTokenCredv2) GetAccessKeyId() (*string, error) {
+	token := cred.updateAndGet()
+	return &token.AccessKeyID, nil
+}
+
+func (cred *managedAddonTokenCredv2) GetAccessKeySecret() (*string, error) {
+	token := cred.updateAndGet()
+	return &token.AccessKeySecret, nil
+}
+
+func (cred *managedAddonTokenCredv2) GetSecurityToken() (*string, error) {
+	token := cred.updateAndGet()
+	return &token.SecurityToken, nil
+}
+
+func (cred *managedAddonTokenCredv2) GetCredential() (*crev2.CredentialModel, error) {
+	token := cred.updateAndGet()
+	return &crev2.CredentialModel{
+		AccessKeyId:     &token.AccessKeyID,
+		AccessKeySecret: &token.AccessKeySecret,
+		SecurityToken:   &token.SecurityToken,
+		BearerToken:     tea.String(""),
+		Type:            tea.String("sts"),
+	}, nil
+}
+
+func (cred *managedAddonTokenCredv2) GetBearerToken() *string {
+	return tea.String("")
+}
+
+func (cred *managedAddonTokenCredv2) GetType() *string {
+	return tea.String("sts")
+}
+
+func GetCredentialV2() (crev2.Credential, error) {
+	// env variable
+	acLocalAK := GetEnvAK()
+	if len(acLocalAK.AccessKeyID) != 0 && len(acLocalAK.AccessKeySecret) != 0 {
+		log.Info("credential v2: using ak from env variables")
+		config := new(crev2.Config).SetType("access_key").
+			SetAccessKeyId(acLocalAK.AccessKeyID).
+			SetAccessKeySecret(acLocalAK.AccessKeySecret)
+		return crev2.NewCredential(config)
+	}
+
+	// try default credential chain
+	cred, err := crev2.NewCredential(nil)
+	if err == nil {
+		log.Info("credential v2: using default credential chain")
+		return cred, nil
+	}
+
+	// managed addon token
+	_, err = os.Stat(ConfigPath)
+	if err == nil {
+		log.Info("credential v2: using managed addon token")
+		return newManagedAddonTokenCredv2(), nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	// ecs ram role
+	log.Info("credential v2: using ecs_ram_role")
+	config := new(crev2.Config).SetType("ecs_ram_role")
+	return crev2.NewCredential(config)
 }

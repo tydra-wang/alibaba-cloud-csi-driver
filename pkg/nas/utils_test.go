@@ -18,28 +18,7 @@ package nas
 
 import (
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
-
-func TestGetNfsDetails(t *testing.T) {
-
-	nfsServerString := "0.0.0.0"
-	nfsServer, nfsPath := GetNfsDetails(nfsServerString)
-	assert.Equal(t, "0.0.0.0", nfsServer)
-	assert.Equal(t, "/", nfsPath)
-
-	nfsServerString = "0.0.0.0:/test"
-	nfsServer, nfsPath = GetNfsDetails(nfsServerString)
-	assert.Equal(t, "0.0.0.0", nfsServer)
-	assert.Equal(t, "/test", nfsPath)
-
-	nfsServerString = "0.0.0.0,0.0.0.1:/test/"
-	nfsServer, nfsPath = GetNfsDetails(nfsServerString)
-	assert.Equal(t, "0.0.0.0", nfsServer)
-	assert.Equal(t, "/", nfsPath)
-
-}
 
 func TestParseMountFlags(t *testing.T) {
 	type args struct {

@@ -5,17 +5,17 @@ import (
 	"go.uber.org/ratelimit"
 )
 
-type NasClient struct {
+type NasClientFactory struct {
 	limiter ratelimit.Limiter
 }
 
-func NewNasClient(nasQpsLimit int) *NasClient {
-	return &NasClient{
+func NewNasClientFactory(nasQpsLimit int) *NasClientFactory {
+	return &NasClientFactory{
 		limiter: ratelimit.New(nasQpsLimit),
 	}
 }
 
-func (fac *NasClient) V2(region string) (*NasClientV2, error) {
+func (fac *NasClientFactory) V2(region string) (*NasClientV2, error) {
 	client, err := newNasClientV2(region)
 	if err != nil {
 		return nil, err
@@ -27,6 +27,6 @@ func (fac *NasClient) V2(region string) (*NasClientV2, error) {
 	}, nil
 }
 
-func (fac *NasClient) V1(region string) (*sdkv1.Client, error) {
+func (fac *NasClientFactory) V1(region string) (*sdkv1.Client, error) {
 	return newNasClientV1(region)
 }

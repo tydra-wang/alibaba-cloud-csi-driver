@@ -23,6 +23,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,13 @@ import (
 type sharepathControllerServer struct {
 	*csicommon.DefaultControllerServer
 	crdClient dynamic.Interface
+}
+
+func newSharepathControllerServer(defaultServer *csicommon.DefaultControllerServer) *sharepathControllerServer {
+	return &sharepathControllerServer{
+		DefaultControllerServer: defaultServer,
+		crdClient:               GlobalConfigVar.DynamicClient,
+	}
 }
 
 func (cs *sharepathControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -96,4 +104,14 @@ func (cs *sharepathControllerServer) CreateVolume(ctx context.Context, req *csi.
 		},
 	}
 	return resp, nil
+}
+
+func (cs *sharepathControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
+	log.Warn("skip deleting volume as sharepath")
+	return &csi.DeleteVolumeResponse{}, nil
+}
+
+func (cs *sharepathControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+	log.Warn("skip expansion for volume as sharepath")
+	return &csi.ControllerExpandVolumeResponse{CapacityBytes: req.CapacityRange.RequiredBytes}, nil
 }

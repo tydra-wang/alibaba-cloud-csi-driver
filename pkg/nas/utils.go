@@ -17,7 +17,6 @@ limitations under the License.
 package nas
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -26,31 +25,18 @@ import (
 	"strings"
 	"time"
 
-	aliyunep "github.com/aliyun/alibaba-cloud-sdk-go/sdk/endpoints"
 	sdkerrors "github.com/aliyun/alibaba-cloud-sdk-go/sdk/errors"
-	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
-	aliNas "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/losetup"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/version"
 	log "github.com/sirupsen/logrus"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/dynamic"
 	mountutils "k8s.io/mount-utils"
 )
 
 const (
-	// MetadataURL is metadata url
-	MetadataURL = "http://100.100.100.200/latest/meta-data/"
 	// RegionTag is region id
 	RegionTag = "region-id"
-	// NsenterCmd is nsenter mount command
-	NsenterCmd = "nsenter --mount=/proc/1/ns/mnt"
-	//Nsenter is nsenter binary command
-	Nsenter = "nsenter"
 	// LoopLockFile lock file for nas loopsetup
 	LoopLockFile = "loopsetup.nas.csi.alibabacloud.com.lck"
 	// LoopImgFile image file for nas loopsetup
@@ -59,7 +45,7 @@ const (
 	Resize2fsFailedFilename = "resize2fs_failed.txt"
 	// Resize2fsFailedFixCmd ...
 	Resize2fsFailedFixCmd = "%s fsck -a %s"
-
+	// GiB bytes
 	GiB = 1 << 30
 	// see https://help.aliyun.com/zh/nas/modify-the-maximum-number-of-concurrent-nfs-requests
 	TcpSlotTableEntries      = "/proc/sys/sunrpc/tcp_slot_table_entries"
@@ -165,141 +151,6 @@ func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsS
 	return mounter.Mount(source, mountPoint, mountFstype, combinedOptions)
 }
 
-// GetNfsDetails get nfs server's details
-func GetNfsDetails(nfsServersString string) (string, string) {
-	nfsServer, nfsPath := "", ""
-	nfsServerList := strings.Split(nfsServersString, ",")
-	serverNum := len(nfsServerList)
-
-	if _, ok := storageClassServerPos[nfsServersString]; !ok {
-		storageClassServerPos[nfsServersString] = 0
-	}
-	zoneIndex := storageClassServerPos[nfsServersString] % serverNum
-	selectedServer := nfsServerList[zoneIndex]
-	storageClassServerPos[nfsServersString]++
-
-	serverParts := strings.Split(selectedServer, ":")
-	if len(serverParts) == 1 {
-		nfsServer = serverParts[0]
-		nfsPath = "/"
-	} else if len(serverParts) == 2 {
-		nfsServer = serverParts[0]
-		nfsPath = serverParts[1]
-		if nfsPath == "" {
-			nfsPath = "/"
-		}
-	} else {
-		nfsServer = ""
-		nfsPath = ""
-	}
-
-	// remove / if path end with /;
-	if nfsPath != "/" && strings.HasSuffix(nfsPath, "/") {
-		nfsPath = nfsPath[0 : len(nfsPath)-1]
-	}
-
-	return nfsServer, nfsPath
-}
-
-func updateNasClient(client *aliNas.Client, regionID string) *aliNas.Client {
-	ac := utils.GetAccessControl()
-	if ac.UseMode == utils.EcsRAMRole || ac.UseMode == utils.ManagedToken {
-		client = newNasClient(ac, regionID)
-	}
-	if client.Client.GetConfig() != nil {
-		client.Client.GetConfig().UserAgent = KubernetesAlicloudIdentity
-	}
-	return client
-}
-
-func newNasClient(ac utils.AccessControl, regionID string) (nasClient *aliNas.Client) {
-	nasClient, err := aliNas.NewClientWithOptions(regionID, ac.Config, ac.Credential)
-	if err != nil {
-		return nil
-	}
-
-	if os.Getenv("ALICLOUD_CLIENT_SCHEME") != "HTTP" {
-		nasClient.SetHTTPSInsecure(false)
-		nasClient.GetConfig().WithScheme("HTTPS")
-	}
-
-	// Set Nas Endpoint
-	SetNasEndPoint(regionID)
-	return
-}
-
-// SetNasEndPoint Set Endpoint for Nas
-func SetNasEndPoint(regionID string) {
-	// use unitized region endpoint for blew regions.
-	// total 16 regions
-	unitizedRegions := []string{"cn-hangzhou", "cn-zhangjiakou", "cn-huhehaote", "cn-shenzhen", "ap-southeast-1", "ap-southeast-2",
-		"ap-southeast-3", "ap-southeast-5", "eu-central-1", "us-east-1", "ap-northeast-1", "ap-south-1",
-		"us-west-1", "eu-west-1", "cn-chengdu", "cn-north-2-gov-1", "cn-beijing", "cn-shanghai", "cn-hongkong",
-		"cn-shenzhen-finance-1", "cn-shanghai-finance-1", "cn-hangzhou-finance", "cn-qingdao"}
-	for _, tmpRegion := range unitizedRegions {
-		if regionID == tmpRegion {
-			aliyunep.AddEndpointMapping(regionID, "Nas", "nas-vpc."+regionID+".aliyuncs.com")
-			break
-		}
-	}
-
-	// use environment endpoint setting first;
-	if ep := os.Getenv("NAS_ENDPOINT"); ep != "" {
-		aliyunep.AddEndpointMapping(regionID, "Nas", ep)
-	}
-}
-
-func setNasVolumeCapacity(nfsServer, nfsPath string, volSizeBytes int64) error {
-	if nfsPath == "" || nfsPath == "/" {
-		return fmt.Errorf("Volume %s:%s not support set quota to root path ", nfsServer, nfsPath)
-	}
-	nasClient := updateNasClient(GlobalConfigVar.NasClient, GlobalConfigVar.Region)
-	fsList := strings.Split(nfsServer, "-")
-	if len(fsList) < 1 {
-		return fmt.Errorf("volume error nas server(%s) ", nfsServer)
-	}
-	quotaRequest := aliNas.CreateSetDirQuotaRequest()
-	quotaRequest.FileSystemId = fsList[0]
-	quotaRequest.Path = nfsPath
-	quotaRequest.UserType = "AllUsers"
-	quotaRequest.QuotaType = "Enforcement"
-	quotaRequest.SizeLimit = requests.NewInteger64((volSizeBytes + GiB - 1) / GiB)
-	quotaRequest.RegionId, _ = utils.GetMetaData(RegionTag)
-	log.Infof("SetDirQuotaRequest: %+v", quotaRequest)
-	_, err := nasClient.SetDirQuota(quotaRequest)
-	if err != nil {
-		return fmt.Errorf("SetDirQuota: %w", err)
-	}
-	return nil
-}
-
-func setNasVolumeCapacityWithID(pvObj *v1.PersistentVolume, crdClient dynamic.Interface, volSizeBytes int64) error {
-	if pvObj.Spec.CSI == nil {
-		return fmt.Errorf("Volume %s is not CSI type %v ", pvObj.Name, pvObj)
-	}
-
-	// Check Pv volume parameters
-	if value, ok := pvObj.Spec.CSI.VolumeAttributes["volumeCapacity"]; ok && value == "false" {
-		return fmt.Errorf("Volume %s not contain volumeCapacity parameters, not support expand, PV: %v ", pvObj.Name, pvObj)
-	}
-	nfsServer, nfsPath := "", ""
-	if value, ok := pvObj.Spec.CSI.VolumeAttributes["server"]; ok {
-		nfsServer = value
-	} else {
-		if value, ok := pvObj.Spec.CSI.VolumeAttributes["containerNetworkFileSystem"]; ok {
-			cnfs, err := v1beta1.GetCnfsObject(crdClient, value)
-			if err != nil {
-				return err
-			}
-			nfsServer = cnfs.Status.FsAttributes.Server
-		}
-	}
-	if value, ok := pvObj.Spec.CSI.VolumeAttributes["path"]; ok {
-		nfsPath = value
-	}
-	return setNasVolumeCapacity(nfsServer, nfsPath, volSizeBytes)
-}
-
 // check system config,
 // if tcp_slot_table_entries not set to 128, just config.
 func checkSystemNasConfig() error {
@@ -347,16 +198,6 @@ func createLosetupPv(fullPath string, volSizeBytes int64) error {
 
 // /var/lib/kubelet/pods/5e03c7f7-2946-4ee1-ad77-2efbc4fdb16c/volumes/kubernetes.io~csi/nas-f5308354-725a-4fd3-b613-0f5b384bd00e/mount
 func mountLosetupPv(mounter mountutils.Interface, mountPoint string, opt *Options, volumeID string) error {
-	// if target path mounted already, return
-	notMounted, err := mounter.IsLikelyNotMountPoint(mountPoint)
-	if err != nil {
-		return fmt.Errorf("check mount point %s: %w", mountPoint, err)
-	}
-	if !notMounted {
-		log.Infof("mountLosetupPv: TargetPath(%s) is mounted as tmpfs, not need mount again", mountPoint)
-		return nil
-	}
-
 	pathList := strings.Split(mountPoint, "/")
 	if len(pathList) != 10 {
 		return fmt.Errorf("mountLosetupPv: mountPoint format error, %s", mountPoint)
@@ -371,7 +212,7 @@ func mountLosetupPv(mounter mountutils.Interface, mountPoint string, opt *Option
 		return fmt.Errorf("mountLosetupPv: create nfs mountPath error %s ", err.Error())
 	}
 	//mount nas to use losetup dev
-	err = doMount(mounter, "nas", "nfsclient", opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, nfsPath, volumeID, podID)
+	err := doMount(mounter, "nas", "nfsclient", opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, nfsPath, volumeID, podID)
 	if err != nil {
 		return fmt.Errorf("mountLosetupPv: mount losetup volume failed: %s", err.Error())
 	}
@@ -381,6 +222,17 @@ func mountLosetupPv(mounter mountutils.Interface, mountPoint string, opt *Option
 		return fmt.Errorf("mountLosetupPv: nfs losetup file is used by others %s", lockFile)
 	}
 	imgFile := filepath.Join(nfsPath, LoopImgFile)
+	_, err = os.Stat(imgFile)
+	if err != nil {
+		if os.IsNotExist(err) && opt.LoopImageSize != 0 {
+			if err := createLosetupPv(nfsPath, int64(opt.LoopImageSize)); err != nil {
+				return fmt.Errorf("init loop image file: %w", err)
+			}
+			log.Infof("created loop image file for %s, size: %d", pvName, opt.LoopImageSize)
+		} else {
+			return err
+		}
+	}
 	failedFile := filepath.Join(nfsPath, Resize2fsFailedFilename)
 	if utils.IsFileExisting(failedFile) {
 		// path/to/whatever does not exist
@@ -481,10 +333,6 @@ func isLosetupMount(volumeID string) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-func getPvObj(volumeID string) (*v1.PersistentVolume, error) {
-	return GlobalConfigVar.KubeClient.CoreV1().PersistentVolumes().Get(context.Background(), volumeID, metav1.GetOptions{})
 }
 
 func isValidCnfsParameter(server string, cnfsName string) error {
