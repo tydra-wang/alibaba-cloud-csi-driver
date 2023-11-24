@@ -18,7 +18,6 @@ package nas
 
 import (
 	"context"
-	"encoding/json"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -35,12 +34,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	acv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
 const (
+	finalizerFieldManager    = "nas-subpath-deletion-controller"
 	subpathArchiveFinalizer  = "csi.alibabacloud.com/nas-subpath-archive"
 	subpathDeletionFinalizer = "csi.alibabacloud.com/nas-subpath-deletion"
 )
@@ -308,21 +308,17 @@ func (cs *subpathControllerServer) ControllerExpandVolume(ctx context.Context, r
 }
 
 func (cs *subpathControllerServer) patchFinalizerOnPV(ctx context.Context, pv *corev1.PersistentVolume, finalizer string) error {
-	for _, f := range pv.Finalizers {
+	ac, err := acv1.ExtractPersistentVolume(pv, finalizerFieldManager)
+	if err != nil {
+		return err
+	}
+	for _, f := range ac.Finalizers {
 		if f == finalizer {
 			return nil
 		}
 	}
-	patch := corev1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Finalizers: []string{finalizer},
-		},
-	}
-	patchData, err := json.Marshal(patch)
-	if err != nil {
-		return err
-	}
-	_, err = cs.kubeClient.CoreV1().PersistentVolumes().Patch(ctx, pv.Name, types.StrategicMergePatchType, patchData, metav1.PatchOptions{})
+	ac.WithFinalizers(finalizer)
+	_, err = cs.kubeClient.CoreV1().PersistentVolumes().Apply(ctx, ac, metav1.ApplyOptions{FieldManager: finalizerFieldManager, Force: true})
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
