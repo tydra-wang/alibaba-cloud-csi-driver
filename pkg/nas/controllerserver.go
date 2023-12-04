@@ -97,7 +97,7 @@ func (cs *controllerServer) volumeAs(volumeAs string) (controllerServerMode, err
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
-	log.Infof("start provision for %s", req.Name)
+	log.WithField("request", req).Info("CreateVolume: starting")
 	if err := validateCreateVolumeRequest(req); err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 	resp, err := server.CreateVolume(ctx, req)
 	if err == nil {
-		log.WithFields(log.Fields{"response": resp, "request": req}).Info("provision succeeded")
+		log.WithField("response", resp).Info("CreateVolume: succeeded")
 	}
 	return resp, err
 }
@@ -136,7 +136,7 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	ctx = context.WithValue(ctx, contextPVKey, pv)
 	resp, err := server.DeleteVolume(ctx, req)
 	if err == nil {
-		log.WithFields(log.Fields{"response": resp, "request": req}).Info("succeeded to delete volume")
+		log.WithField("response", resp).Info("DeleteVolume: succeeded")
 	}
 	return resp, err
 }
@@ -163,7 +163,7 @@ func (cs *controllerServer) ControllerExpandVolume(
 	ctx = context.WithValue(ctx, contextPVKey, pv)
 	resp, err := server.ControllerExpandVolume(ctx, req)
 	if err == nil {
-		log.WithFields(log.Fields{"response": resp, "request": req}).Info("succeeded to expand volume")
+		log.WithField("response", resp).Info("ControllerExpandVolume: succeeded")
 	}
 	return resp, err
 }
