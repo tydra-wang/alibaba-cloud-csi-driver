@@ -15,13 +15,19 @@ import (
 )
 
 func newNasClientV2(region string) (*sdk.Client, error) {
-	config := new(openapi.Config)
+	config := new(openapi.Config).
+		SetRegionId(region).
+		SetGlobalParameters(&openapi.GlobalParameters{
+			Queries: map[string]*string{
+				"RegionId": &region,
+			},
+		})
 	// set credential
 	cred, err := utils.GetCredentialV2()
 	if err != nil {
 		return nil, fmt.Errorf("init credential: %w", err)
 	}
-	config = config.SetRegionId(region).SetCredential(cred)
+	config = config.SetCredential(cred)
 	// set endpoint
 	ep := os.Getenv("NAS_ENDPOINT")
 	if ep == "" {

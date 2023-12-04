@@ -75,7 +75,6 @@ func NewControllerServer(d *csicommon.CSIDriver) (csi.ControllerServer, error) {
 }
 
 func validateCreateVolumeRequest(req *csi.CreateVolumeRequest) error {
-	log.Infof("Starting nfs validate create volume request %s, %v", req.Name, req)
 	valid, err := utils.CheckRequestArgs(req.GetParameters())
 	if !valid {
 		return status.Errorf(codes.InvalidArgument, err.Error())
