@@ -167,7 +167,7 @@ func (f *fuseOssfs) buildPodSpec(
 			FailureThreshold: 5,
 		},
 		SecurityContext: &corev1.SecurityContext{
-			Privileged: pointer.BoolPtr(true),
+			Privileged: pointer.Bool(true),
 		},
 	}
 	if mimeMountDir == OssfsDefMimeTypesFilePath {
