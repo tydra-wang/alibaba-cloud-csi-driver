@@ -35,6 +35,7 @@ import (
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/losetup"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -612,5 +613,6 @@ func isMountTargetNotFoundError(err error) bool {
 		return false
 	}
 	code := serverErr.ErrorCode()
+	logrus.Info("fuck error: %s", code)
 	return code == "InvalidParam.MountTargetDomain" || code == "InvalidMountTarget.NotFound"
 }
