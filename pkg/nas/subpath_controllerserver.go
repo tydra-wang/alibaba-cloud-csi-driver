@@ -27,7 +27,7 @@ import (
 	"github.com/alibabacloud-go/tea/tea"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/cloud"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -50,7 +50,7 @@ type subpathControllerServer struct {
 	enableDeletionFinalizer bool
 	crdClient               dynamic.Interface
 	kubeClient              kubernetes.Interface
-	nasClient               *internal.NasClientV2
+	nasClient               *cloud.NasClientV2
 }
 
 func newSubpathControllerServer() (*subpathControllerServer, error) {
@@ -147,7 +147,7 @@ func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.Cr
 	}
 	// Only standard filesystems support "CreateDir" and "SetDirQuota" APIs.
 	// Subpaths of other types filesystems will be truly created when NodePublishVolume.
-	if filesystemType != internal.FilesystemTypeStandard {
+	if filesystemType != cloud.FilesystemTypeStandard {
 		return resp, nil
 	}
 	if cs.fakeProvision {

@@ -1,4 +1,4 @@
-package internal
+package cloud
 
 import (
 	sdkv1 "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
