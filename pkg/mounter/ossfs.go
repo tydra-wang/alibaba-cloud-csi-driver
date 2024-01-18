@@ -76,7 +76,7 @@ func (f *fuseOssfs) buildPodSpec(
 	source, target, fstype string, authCfg *AuthConfig, options, mountFlags []string, nodeName, volumeId string,
 ) (spec corev1.PodSpec, _ error) {
 
-	spec.TerminationGracePeriodSeconds = pointer.Int64Ptr(120)
+	spec.TerminationGracePeriodSeconds = pointer.Int64(120)
 
 	targetVolume := corev1.Volume{
 		Name: "kubelet-dir",
@@ -285,10 +285,10 @@ func buildAuthSpec(nodeName, volumeId string, authCfg *AuthConfig,
 					{
 						Key:  fmt.Sprintf("%s.%s", nodeName, volumeId),
 						Path: passwdFilename,
-						Mode: pointer.Int32Ptr(0600),
+						Mode: pointer.Int32(0600),
 					},
 				},
-				Optional: pointer.BoolPtr(true),
+				Optional: pointer.Bool(true),
 			},
 		},
 	}
