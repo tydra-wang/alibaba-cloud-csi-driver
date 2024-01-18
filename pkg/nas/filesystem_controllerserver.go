@@ -27,7 +27,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	aliNas "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/cloud"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
@@ -100,7 +100,7 @@ type nasVolumeArgs struct {
 }
 
 type filesystemControllerServer struct {
-	nasClientFactory *internal.NasClientFactory
+	nasClientFactory *cloud.NasClientFactory
 	region           string
 	client           kubernetes.Interface
 	recorder         record.EventRecorder

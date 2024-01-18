@@ -26,7 +26,7 @@ import (
 	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/dadi"
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/cloud"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/options"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/version"
@@ -65,7 +65,7 @@ type GlobalConfig struct {
 	NasPortCheck            bool
 	KubeClient              *kubernetes.Clientset
 	DynamicClient           dynamic.Interface
-	NasClientFactory        *internal.NasClientFactory
+	NasClientFactory        *cloud.NasClientFactory
 	EventRecorder           record.EventRecorder
 	EnableDeletionFinalzier bool
 }
@@ -110,7 +110,7 @@ func NewDriver(nodeID, endpoint, serviceType string) *NAS {
 		log.Errorf("invalid NAS_LIMIT_PERSECOND %q", limit)
 		nasQps = 2
 	}
-	GlobalConfigVar.NasClientFactory = internal.NewNasClientFactory(nasQps)
+	GlobalConfigVar.NasClientFactory = cloud.NewNasClientFactory(nasQps)
 	GlobalConfigVar.EventRecorder = utils.NewEventRecorder()
 	if enableDeletionFinalzier, err := strconv.ParseBool(os.Getenv("ENABLE_SUBPATH_DELETION_FINALZIER")); err == nil {
 		GlobalConfigVar.EnableDeletionFinalzier = enableDeletionFinalzier
