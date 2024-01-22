@@ -20,8 +20,6 @@ import (
 	"context"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
-	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
@@ -39,33 +37,29 @@ func init() {
 	internal.RegisterControllerMode(newSubpathController)
 }
 
+var (
+	// controllerCaps represents the capability of controller service
+	controllerCaps = []csi.ControllerServiceCapability_RPC_Type{
+		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
+		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
+	}
+)
+
 type controllerServer struct {
-	*csicommon.DefaultControllerServer
 	*internal.ControllerFactory
 	kubeClient kubernetes.Interface
 	locks      *utils.VolumeLocks
 }
 
-func NewControllerServer(d *csicommon.CSIDriver) (csi.ControllerServer, error) {
-	defaultServer := csicommon.NewDefaultControllerServer(d)
-	fac, err := internal.NewControllerFactory(&internal.ControllerConfig{
-		Region:                 GlobalConfigVar.Region,
-		ClusterID:              GlobalConfigVar.ClusterID,
-		SkipSubpathCreation:    GlobalConfigVar.NasFakeProvision,
-		EnableSubpathFinalizer: true,
-		KubeClient:             GlobalConfigVar.KubeClient,
-		CNFSGetter:             cnfsv1beta1.NewCNFSGetter(GlobalConfigVar.DynamicClient),
-		EventRecorder:          GlobalConfigVar.EventRecorder,
-		NasClientFactory:       GlobalConfigVar.NasClientFactory,
-	}, defaultVolumeAs)
+func newControllerServer(config *internal.ControllerConfig) (*controllerServer, error) {
+	fac, err := internal.NewControllerFactory(config, defaultVolumeAs)
 	if err != nil {
 		return nil, err
 	}
 	c := &controllerServer{
-		DefaultControllerServer: defaultServer,
-		ControllerFactory:       fac,
-		kubeClient:              GlobalConfigVar.KubeClient,
-		locks:                   utils.NewVolumeLocks(),
+		ControllerFactory: fac,
+		kubeClient:        config.KubeClient,
+		locks:             utils.NewVolumeLocks(),
 	}
 	return c, nil
 }
@@ -145,10 +139,7 @@ func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 	return resp, err
 }
 
-func (cs *controllerServer) ValidateVolumeCapabilities(
-	ctx context.Context,
-	req *csi.ValidateVolumeCapabilitiesRequest,
-) (*csi.ValidateVolumeCapabilitiesResponse, error) {
+func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
 	for _, cap := range req.VolumeCapabilities {
 		if cap.GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER {
 			return &csi.ValidateVolumeCapabilitiesResponse{Message: ""}, nil
@@ -161,34 +152,44 @@ func (cs *controllerServer) ValidateVolumeCapabilities(
 	}, nil
 }
 
-func (cs *controllerServer) ControllerUnpublishVolume(
-	ctx context.Context,
-	req *csi.ControllerUnpublishVolumeRequest,
-) (*csi.ControllerUnpublishVolumeResponse, error) {
-	log.Infof("ControllerUnpublishVolume is called, do nothing by now")
-	return &csi.ControllerUnpublishVolumeResponse{}, nil
+func (cs *controllerServer) ControllerGetCapabilities(ctx context.Context, req *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
+	var caps []*csi.ControllerServiceCapability
+	for _, cap := range controllerCaps {
+		c := &csi.ControllerServiceCapability{
+			Type: &csi.ControllerServiceCapability_Rpc{
+				Rpc: &csi.ControllerServiceCapability_RPC{
+					Type: cap,
+				},
+			},
+		}
+		caps = append(caps, c)
+	}
+	return &csi.ControllerGetCapabilitiesResponse{Capabilities: caps}, nil
 }
 
-func (cs *controllerServer) ControllerPublishVolume(
-	ctx context.Context,
-	req *csi.ControllerPublishVolumeRequest,
-) (*csi.ControllerPublishVolumeResponse, error) {
-	log.Infof("ControllerPublishVolume is called, do nothing by now")
-	return &csi.ControllerPublishVolumeResponse{}, nil
+func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (cs *controllerServer) CreateSnapshot(
-	ctx context.Context,
-	req *csi.CreateSnapshotRequest,
-) (*csi.CreateSnapshotResponse, error) {
-	log.Infof("CreateSnapshot is called, do nothing now")
-	return &csi.CreateSnapshotResponse{}, nil
+func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (cs *controllerServer) DeleteSnapshot(
-	ctx context.Context,
-	req *csi.DeleteSnapshotRequest,
-) (*csi.DeleteSnapshotResponse, error) {
-	log.Infof("DeleteSnapshot is called, do nothing now")
-	return &csi.DeleteSnapshotResponse{}, nil
+func (cs *controllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
+}
+
+func (cs *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
+}
+func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
+}
+
+func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
+}
+
+func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
 }

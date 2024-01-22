@@ -22,8 +22,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/container-storage-interface/spec/lib/go/csi"
-	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/dadi"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/cloud"
@@ -41,8 +39,6 @@ import (
 
 const (
 	driverName = "nasplugin.csi.alibabacloud.com"
-	// InstanceID is instance id
-	InstanceID = "instance-id"
 )
 
 var (
@@ -72,63 +68,68 @@ type GlobalConfig struct {
 
 // NAS the NAS object
 type NAS struct {
-	driver           *csicommon.CSIDriver
 	endpoint         string
-	controllerServer csi.ControllerServer
+	identityServer   *identityServer
+	controllerServer *controllerServer
+	nodeServer       *nodeServer
 }
 
-// NewDriver create the identity/node/controller server and disk driver
 func NewDriver(nodeID, endpoint, serviceType string) *NAS {
 	log.Infof("Driver: %v version: %v", driverName, version.VERSION)
 
-	d := &NAS{}
+	var d NAS
 	d.endpoint = endpoint
-	if nodeID == "" {
-		nodeID = utils.RetryGetMetaData(InstanceID)
-		log.Infof("Use node id : %s", nodeID)
-	}
-	csiDriver := csicommon.NewCSIDriver(driverName, version.VERSION, nodeID)
-	csiDriver.AddVolumeCapabilityAccessModes([]csi.VolumeCapability_AccessMode_Mode{csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER})
-	csiDriver.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
-		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
-		csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
-		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
-	})
 
-	// Global Configs Set
-	GlobalConfigSet(serviceType)
+	d.identityServer = newIdentityServer(driverName, version.VERSION)
 
-	regionID := os.Getenv("REGION_ID")
-	if len(regionID) == 0 {
-		regionID, _ = utils.GetMetaData(RegionTag)
-	}
-	GlobalConfigVar.Region = regionID
-
-	limit := os.Getenv("NAS_LIMIT_PERSECOND")
-	nasQps, err := strconv.Atoi(limit)
-	if err != nil {
-		log.Errorf("invalid NAS_LIMIT_PERSECOND %q", limit)
-		nasQps = 2
-	}
-	GlobalConfigVar.NasClientFactory = cloud.NewNasClientFactory(nasQps)
-	GlobalConfigVar.EventRecorder = utils.NewEventRecorder()
-	if enableDeletionFinalzier, err := strconv.ParseBool(os.Getenv("ENABLE_SUBPATH_DELETION_FINALZIER")); err == nil {
-		GlobalConfigVar.EnableDeletionFinalzier = enableDeletionFinalzier
+	if serviceType == utils.ProvisionerService {
+		// TODO
+		cs, err := newControllerServer(nil)
+		if err != nil {
+			log.Fatalf("failed to init nas controller server: %v", err)
+		}
+		d.controllerServer = cs
 	} else {
-		GlobalConfigVar.EnableDeletionFinalzier = true
+		d.nodeServer = newNodeServer()
 	}
+	return &d
 
-	d.driver = csiDriver
-	d.controllerServer, err = NewControllerServer(d.driver)
-	if err != nil {
-		log.Fatalf("failed to init nas controller server: %v", err)
-	}
-	return d
+	// csiDriver := csicommon.NewCSIDriver(driverName, version.VERSION, nodeID)
+	// csiDriver.AddVolumeCapabilityAccessModes([]csi.VolumeCapability_AccessMode_Mode{csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER})
+	// csiDriver.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
+	// 	csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
+	// 	csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
+	// 	csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
+	// })
+	//
+	// // Global Configs Set
+	// GlobalConfigSet(serviceType)
+	//
+	// regionID := os.Getenv("REGION_ID")
+	// if len(regionID) == 0 {
+	// 	regionID, _ = utils.GetMetaData(RegionTag)
+	// }
+	// GlobalConfigVar.Region = regionID
+	//
+	// limit := os.Getenv("NAS_LIMIT_PERSECOND")
+	// nasQps, err := strconv.Atoi(limit)
+	// if err != nil {
+	// 	log.Errorf("invalid NAS_LIMIT_PERSECOND %q", limit)
+	// 	nasQps = 2
+	// }
+	// GlobalConfigVar.NasClientFactory = cloud.NewNasClientFactory(nasQps)
+	// GlobalConfigVar.EventRecorder = utils.NewEventRecorder()
+	// if enableDeletionFinalzier, err := strconv.ParseBool(os.Getenv("ENABLE_SUBPATH_DELETION_FINALZIER")); err == nil {
+	// 	GlobalConfigVar.EnableDeletionFinalzier = enableDeletionFinalzier
+	// } else {
+	// 	GlobalConfigVar.EnableDeletionFinalzier = true
+	// }
+	//
+	// d.driver = csiDriver
 }
 
-// Run start a new NodeServer
 func (d *NAS) Run() {
-	common.RunCSIServer(d.endpoint, csicommon.NewDefaultIdentityServer(d.driver), d.controllerServer, newNodeServer(d))
+	common.RunCSIServer(d.endpoint, d.identityServer, d.controllerServer, d.nodeServer)
 }
 
 // GlobalConfigSet set global config
