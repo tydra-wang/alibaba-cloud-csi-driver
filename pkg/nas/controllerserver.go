@@ -21,6 +21,8 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
+	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
@@ -29,47 +31,41 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// controllerServerMode is a NAS controller server working mode.
-// The implements could extract PV object when DeleteVolume/ControllerExpandVolume by "ctx.Value(contextPVKey).(*corev1.PersistentVolume)".
-type controllerServerMode interface {
-	CreateVolume(context.Context, *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error)
-	DeleteVolume(context.Context, *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error)
-	ControllerExpandVolume(context.Context, *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error)
+const defaultVolumeAs = "subpath"
+
+func init() {
+	internal.RegisterControllerMode(newFilesystemController)
+	internal.RegisterControllerMode(newSharepathController)
+	internal.RegisterControllerMode(newSubpathController)
 }
-
-var contextPVKey = struct{}{}
-
-// controllerServerMode implements
-var (
-	_ controllerServerMode = &filesystemControllerServer{}
-	_ controllerServerMode = &subpathControllerServer{}
-	_ controllerServerMode = &sharepathControllerServer{}
-)
 
 type controllerServer struct {
 	*csicommon.DefaultControllerServer
-	locks      *utils.VolumeLocks
+	*internal.ControllerFactory
 	kubeClient kubernetes.Interface
-	// controller server modes
-	filesystemServer, subpathServer, sharepathServer controllerServerMode
+	locks      *utils.VolumeLocks
 }
 
-// NewControllerServer is to create controller server
 func NewControllerServer(d *csicommon.CSIDriver) (csi.ControllerServer, error) {
 	defaultServer := csicommon.NewDefaultControllerServer(d)
-	subpathServer, err := newSubpathControllerServer()
+	fac, err := internal.NewControllerFactory(&internal.ControllerConfig{
+		Region:                 GlobalConfigVar.Region,
+		ClusterID:              GlobalConfigVar.ClusterID,
+		SkipSubpathCreation:    GlobalConfigVar.NasFakeProvision,
+		EnableSubpathFinalizer: true,
+		KubeClient:             GlobalConfigVar.KubeClient,
+		CNFSGetter:             cnfsv1beta1.NewCNFSGetter(GlobalConfigVar.DynamicClient),
+		EventRecorder:          GlobalConfigVar.EventRecorder,
+		NasClientFactory:       GlobalConfigVar.NasClientFactory,
+	}, defaultVolumeAs)
 	if err != nil {
 		return nil, err
 	}
-	sharepathServer := newSharepathControllerServer()
-	filesystemServer := newFilesystemControllerServer()
 	c := &controllerServer{
 		DefaultControllerServer: defaultServer,
-		locks:                   utils.NewVolumeLocks(),
+		ControllerFactory:       fac,
 		kubeClient:              GlobalConfigVar.KubeClient,
-		filesystemServer:        filesystemServer,
-		subpathServer:           subpathServer,
-		sharepathServer:         sharepathServer,
+		locks:                   utils.NewVolumeLocks(),
 	}
 	return c, nil
 }
@@ -82,19 +78,6 @@ func validateCreateVolumeRequest(req *csi.CreateVolumeRequest) error {
 	return nil
 }
 
-func (cs *controllerServer) volumeAs(volumeAs string) (controllerServerMode, error) {
-	switch volumeAs {
-	case "", "subpath":
-		return cs.subpathServer, nil
-	case "sharepath":
-		return cs.sharepathServer, nil
-	case "filesystem":
-		return cs.filesystemServer, nil
-	default:
-		return nil, status.Errorf(codes.InvalidArgument, "invalid volumeAs: %q", volumeAs)
-	}
-}
-
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	log.WithField("request", req).Info("CreateVolume: starting")
 	if err := validateCreateVolumeRequest(req); err != nil {
@@ -105,11 +88,11 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 	defer cs.locks.Release(req.Name)
 
-	server, err := cs.volumeAs(req.Parameters["volumeAs"])
+	controller, err := cs.VolumeAs(req.Parameters["volumeAs"])
 	if err != nil {
 		return nil, err
 	}
-	resp, err := server.CreateVolume(ctx, req)
+	resp, err := controller.CreateVolume(ctx, req)
 	if err == nil {
 		log.WithField("response", resp).Info("CreateVolume: succeeded")
 	}
@@ -128,22 +111,18 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	server, err := cs.volumeAs(pv.Spec.CSI.VolumeAttributes["volumeAs"])
+	controller, err := cs.VolumeAs(pv.Spec.CSI.VolumeAttributes["volumeAs"])
 	if err != nil {
 		return nil, err
 	}
-	ctx = context.WithValue(ctx, contextPVKey, pv)
-	resp, err := server.DeleteVolume(ctx, req)
+	resp, err := controller.DeleteVolume(ctx, req, pv)
 	if err == nil {
 		log.WithField("response", resp).Info("DeleteVolume: succeeded")
 	}
 	return resp, err
 }
 
-func (cs *controllerServer) ControllerExpandVolume(
-	ctx context.Context,
-	req *csi.ControllerExpandVolumeRequest,
-) (*csi.ControllerExpandVolumeResponse, error) {
+func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
 	log.Infof("ControllerExpandVolume: starting to expand nas volume with %v", req)
 	if !cs.locks.TryAcquire(req.VolumeId) {
 		return nil, status.Errorf(codes.Aborted, "There is already an operation for volume %s", req.VolumeId)
@@ -155,12 +134,11 @@ func (cs *controllerServer) ControllerExpandVolume(
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	server, err := cs.volumeAs(pv.Spec.CSI.VolumeAttributes["volumeAs"])
+	controller, err := cs.VolumeAs(pv.Spec.CSI.VolumeAttributes["volumeAs"])
 	if err != nil {
 		return nil, err
 	}
-	ctx = context.WithValue(ctx, contextPVKey, pv)
-	resp, err := server.ControllerExpandVolume(ctx, req)
+	resp, err := controller.ControllerExpandVolume(ctx, req, pv)
 	if err == nil {
 		log.WithField("response", resp).Info("ControllerExpandVolume: succeeded")
 	}

@@ -6,6 +6,7 @@ import (
 )
 
 type NasClientFactory struct {
+	// ratelimiter only takes effect on v2 client
 	limiter ratelimit.Limiter
 }
 

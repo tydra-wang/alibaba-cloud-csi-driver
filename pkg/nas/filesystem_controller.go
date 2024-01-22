@@ -27,7 +27,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	aliNas "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/cloud"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
@@ -35,8 +35,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/record"
 )
 
 const (
@@ -72,10 +70,10 @@ const (
 	// SkipMountType tag
 	SkipMountType = "skipmount"
 
-	allowVolumeExpansion = "allowVolumeExpansion"
-	csiAlibabaCloudName  = "csi.alibabacloud.com"
+	csiAlibabaCloudName = "csi.alibabacloud.com"
 )
 
+// TODO: do not use map
 var pvcMountTargetMap = map[string]string{}
 var pvcFileSystemIDMap = map[string]string{}
 var pvcProcessSuccess = map[string]*csi.Volume{}
@@ -99,23 +97,19 @@ type nasVolumeArgs struct {
 	DeleteVolume    bool             `json:"deleteVolume"`
 }
 
-type filesystemControllerServer struct {
-	nasClientFactory *cloud.NasClientFactory
-	region           string
-	client           kubernetes.Interface
-	recorder         record.EventRecorder
+type filesystemController struct {
+	config *internal.ControllerConfig
 }
 
-func newFilesystemControllerServer() *filesystemControllerServer {
-	return &filesystemControllerServer{
-		nasClientFactory: GlobalConfigVar.NasClientFactory,
-		region:           GlobalConfigVar.Region,
-		client:           GlobalConfigVar.KubeClient,
-		recorder:         GlobalConfigVar.EventRecorder,
-	}
+func newFilesystemController(config *internal.ControllerConfig) (internal.Controller, error) {
+	return &filesystemController{config: config}, nil
 }
 
-func (cs *filesystemControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
+func (cs *filesystemController) VolumeAs() string {
+	return "filesystem"
+}
+
+func (cs *filesystemController) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	ref := &v1.ObjectReference{
 		Kind:      "Volume",
 		Name:      req.Name,
@@ -158,9 +152,9 @@ func (cs *filesystemControllerServer) CreateVolume(ctx context.Context, req *csi
 
 	volumeContext := map[string]string{}
 	if len(nasVol.RegionID) == 0 {
-		nasVol.RegionID = GlobalConfigVar.Region
+		nasVol.RegionID = cs.config.Region
 	}
-	nasClient, err := cs.nasClientFactory.V1(nasVol.RegionID)
+	nasClient, err := cs.config.NasClientFactory.V1(nasVol.RegionID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "init nas client: %v", err)
 	}
@@ -184,7 +178,7 @@ func (cs *filesystemControllerServer) CreateVolume(ctx context.Context, req *csi
 			createFileSystemsRequest.EncryptType = requests.Integer(nasVol.EncryptType)
 			createFileSystemsRequest.ZoneId = nasVol.ZoneID
 		}
-		log.Infof("CreateVolume: Volume: %s, Create Nas filesystem with: %v, %v", pvName, cs.region, nasVol)
+		log.Infof("CreateVolume: Volume: %s, Create Nas filesystem with: %v, %v", pvName, cs.config.Region, nasVol)
 
 		createFileSystemsResponse, err := nasClient.CreateFileSystem(createFileSystemsRequest)
 		if err != nil {
@@ -199,8 +193,8 @@ func (cs *filesystemControllerServer) CreateVolume(ctx context.Context, req *csi
 		// Set Default DiskTags
 		tagResourcesRequest := aliNas.CreateTagResourcesRequest()
 		tagResourcesRequest.ResourceId = &[]string{fileSystemID}
-		if GlobalConfigVar.ClusterID != "" {
-			tagResourcesRequest.Tag = &[]aliNas.TagResourcesTag{{Key: NASTAGKEY1, Value: NASTAGVALUE1}, {Key: NASTAGKEY2, Value: NASTAGVALUE2}, {Key: NASTAGKEY3, Value: GlobalConfigVar.ClusterID}}
+		if cs.config.ClusterID != "" {
+			tagResourcesRequest.Tag = &[]aliNas.TagResourcesTag{{Key: NASTAGKEY1, Value: NASTAGVALUE1}, {Key: NASTAGKEY2, Value: NASTAGVALUE2}, {Key: NASTAGKEY3, Value: cs.config.ClusterID}}
 		} else {
 			tagResourcesRequest.Tag = &[]aliNas.TagResourcesTag{{Key: NASTAGKEY1, Value: NASTAGVALUE1}, {Key: NASTAGKEY2, Value: NASTAGVALUE2}}
 		}
@@ -209,7 +203,7 @@ func (cs *filesystemControllerServer) CreateVolume(ctx context.Context, req *csi
 		if err != nil {
 			str := fmt.Sprintf("CreateVolume: responseID[%s], fail to add default tags filesystem with ID: %s, err: %s", tagResourcesResponse.RequestId, fileSystemID, err.Error())
 			e := status.Error(codes.Internal, str)
-			utils.CreateEvent(cs.recorder, ref, v1.EventTypeWarning, AddDefaultTagsError, e.Error())
+			utils.CreateEvent(cs.config.EventRecorder, ref, v1.EventTypeWarning, AddDefaultTagsError, e.Error())
 		} else {
 			log.Infof("CreateVolume: Volume: %s, Successful Add Nas filesystem tags with ID: %s, with requestID: %s", pvName, fileSystemID, createFileSystemsResponse.RequestId)
 		}
@@ -320,7 +314,7 @@ func (cs *filesystemControllerServer) CreateVolume(ctx context.Context, req *csi
 	return &csi.CreateVolumeResponse{Volume: csiTargetVol}, nil
 }
 
-func (cs *filesystemControllerServer) getNasVolumeOptions(req *csi.CreateVolumeRequest) (*nasVolumeArgs, error) {
+func (cs *filesystemController) getNasVolumeOptions(req *csi.CreateVolumeRequest) (*nasVolumeArgs, error) {
 	var ok bool
 	nasVolArgs := &nasVolumeArgs{}
 	volOptions := req.GetParameters()
@@ -436,27 +430,25 @@ func (cs *filesystemControllerServer) getNasVolumeOptions(req *csi.CreateVolumeR
 	return nasVolArgs, nil
 }
 
-func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
-	pvInfo := ctx.Value(contextPVKey).(*corev1.PersistentVolume)
-
+func (cs *filesystemController) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest, pv *corev1.PersistentVolume) (*csi.DeleteVolumeResponse, error) {
 	var fileSystemID, deleteVolume, nfsServer string
-	if value, ok := pvInfo.Spec.CSI.VolumeAttributes["fileSystemId"]; ok {
+	if value, ok := pv.Spec.CSI.VolumeAttributes["fileSystemId"]; ok {
 		fileSystemID = value
 	}
-	if value, ok := pvInfo.Spec.CSI.VolumeAttributes["deleteVolume"]; ok {
+	if value, ok := pv.Spec.CSI.VolumeAttributes["deleteVolume"]; ok {
 		deleteVolume = value
 	}
 	opt := &Options{}
 	opt.MountProtocol = MountProtocolNFS
-	nfsServer = pvInfo.Spec.CSI.VolumeAttributes["server"]
+	nfsServer = pv.Spec.CSI.VolumeAttributes["server"]
 	if nfsServer == "" {
-		return nil, fmt.Errorf("DeleteVolume: Volume Spec with nfs server empty: %s, CSI: %v", req.VolumeId, pvInfo.Spec.CSI)
+		return nil, fmt.Errorf("DeleteVolume: Volume Spec with nfs server empty: %s, CSI: %v", req.VolumeId, pv.Spec.CSI)
 	}
 
-	if pvInfo.Spec.StorageClassName == "" {
-		return nil, fmt.Errorf("DeleteVolume: Volume Spec with storageclass empty: %s, Spec: %v", req.VolumeId, pvInfo.Spec)
+	if pv.Spec.StorageClassName == "" {
+		return nil, fmt.Errorf("DeleteVolume: Volume Spec with storageclass empty: %s, Spec: %v", req.VolumeId, pv.Spec)
 	}
-	storageclass, err := cs.client.StorageV1().StorageClasses().Get(context.Background(), pvInfo.Spec.StorageClassName, metav1.GetOptions{})
+	storageclass, err := cs.config.KubeClient.StorageV1().StorageClasses().Get(context.Background(), pv.Spec.StorageClassName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("DeleteVolume: Volume: %s, request storageclass error: %s", req.VolumeId, err.Error())
 	}
@@ -465,10 +457,10 @@ func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi
 	if value, ok := storageclass.Parameters[RegionID]; ok {
 		regionID = value
 	} else {
-		regionID = GlobalConfigVar.Region
+		regionID = cs.config.Region
 	}
 
-	nasClient, err := cs.nasClientFactory.V1(regionID)
+	nasClient, err := cs.config.NasClientFactory.V1(regionID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "init nas client: %v", err)
 	}
@@ -501,9 +493,7 @@ func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi
 			}
 		}
 		// remove the pvc mountTarget mapping if exist
-		if _, ok := pvcMountTargetMap[req.VolumeId]; ok {
-			delete(pvcMountTargetMap, req.VolumeId)
-		}
+		delete(pvcMountTargetMap, req.VolumeId)
 		log.Infof("DeleteVolume: Volume %s MountTarget %s deleted successfully and Start delete filesystem %s", req.VolumeId, nfsServer, fileSystemID)
 
 		deleteFileSystemRequest := aliNas.CreateDeleteFileSystemRequest()
@@ -515,9 +505,7 @@ func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi
 			return nil, status.Error(codes.Internal, errMsg)
 		}
 		// remove the pvc filesystem mapping if exist
-		if _, ok := pvcFileSystemIDMap[req.VolumeId]; ok {
-			delete(pvcFileSystemIDMap, req.VolumeId)
-		}
+		delete(pvcFileSystemIDMap, req.VolumeId)
 		log.Infof("DeleteVolume: Volume %s Filesystem %s deleted successfully", req.VolumeId, fileSystemID)
 	} else {
 		log.Infof("DeleteVolume: Nas Volume %s Filesystem's deleteVolume is [false], skip delete mountTarget and fileSystem", req.VolumeId)
@@ -528,7 +516,7 @@ func (cs *filesystemControllerServer) DeleteVolume(ctx context.Context, req *csi
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
-func (cs *filesystemControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+func (cs *filesystemController) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest, pv *corev1.PersistentVolume) (*csi.ControllerExpandVolumeResponse, error) {
 	log.Warn("skip expansion for volume as filesystem")
 	return &csi.ControllerExpandVolumeResponse{CapacityBytes: req.CapacityRange.RequiredBytes}, nil
 }
