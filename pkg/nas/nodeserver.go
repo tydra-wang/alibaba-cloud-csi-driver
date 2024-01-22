@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/losetup"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
@@ -44,9 +43,8 @@ import (
 type nodeServer struct {
 	clientSet *kubernetes.Clientset
 	crdClient dynamic.Interface
-	*csicommon.DefaultNodeServer
-	mounter mountutils.Interface
-	locks   *utils.VolumeLocks
+	mounter   mountutils.Interface
+	locks     *utils.VolumeLocks
 }
 
 // Options struct definition
@@ -116,16 +114,15 @@ const (
 )
 
 // newNodeServer create the csi node server
-func newNodeServer(d *NAS) *nodeServer {
+func newNodeServer() *nodeServer {
 	if err := checkSystemNasConfig(); err != nil {
 		log.Errorf("failed to config /proc/sys/sunrpc/tcp_slot_table_entries: %v", err)
 	}
 	return &nodeServer{
-		clientSet:         GlobalConfigVar.KubeClient,
-		crdClient:         GlobalConfigVar.DynamicClient,
-		DefaultNodeServer: csicommon.NewDefaultNodeServer(d.driver),
-		mounter:           NewNasMounter(),
-		locks:             utils.NewVolumeLocks(),
+		clientSet: GlobalConfigVar.KubeClient,
+		crdClient: GlobalConfigVar.DynamicClient,
+		mounter:   NewNasMounter(),
+		locks:     utils.NewVolumeLocks(),
 	}
 }
 
@@ -632,4 +629,8 @@ func (ns *nodeServer) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetC
 func (ns *nodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
 	targetPath := req.GetVolumePath()
 	return utils.GetMetrics(targetPath)
+}
+
+func (ns *nodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "")
 }
