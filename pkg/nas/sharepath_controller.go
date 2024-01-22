@@ -21,26 +21,24 @@ import (
 	"path/filepath"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/dynamic"
 )
 
-type sharepathControllerServer struct {
-	crdClient dynamic.Interface
+type sharepathController struct{}
+
+func newSharepathController(_ *internal.ControllerConfig) (internal.Controller, error) {
+	return &sharepathController{}, nil
 }
 
-func newSharepathControllerServer() *sharepathControllerServer {
-	return &sharepathControllerServer{
-		crdClient: GlobalConfigVar.DynamicClient,
-	}
+func (cs *sharepathController) VolumeAs() string {
+	return "sharepath"
 }
 
-func (cs *sharepathControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
+func (cs *sharepathController) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	parameters := req.Parameters
 	reclaimPolicy, ok := parameters[csiAlibabaCloudName+"/"+"reclaimPolicy"]
 	if ok && reclaimPolicy != string(corev1.PersistentVolumeReclaimRetain) {
@@ -49,20 +47,13 @@ func (cs *sharepathControllerServer) CreateVolume(ctx context.Context, req *csi.
 	volumeContext := map[string]string{}
 	// using cnfs or not
 	if cnfsName := parameters["containerNetworkFileSystem"]; cnfsName != "" {
-		cnfs, err := cnfsv1beta1.GetCnfsObject(cs.crdClient, cnfsName)
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil, status.Errorf(codes.InvalidArgument, "CNFS not found: %s", cnfsName)
-			}
-			return nil, status.Errorf(codes.Internal, "failed to get CNFS %s: %v", cnfsName, err)
-		}
 		path := parameters["path"]
 		if path == "" {
 			path = "/"
 		} else {
 			path = filepath.Clean(path)
 		}
-		volumeContext["containerNetworkFileSystem"] = cnfs.Name
+		volumeContext["containerNetworkFileSystem"] = cnfsName
 		volumeContext["path"] = path
 	} else {
 		server, path := muxServerSelector.SelectNfsServer(parameters["server"])
@@ -75,6 +66,9 @@ func (cs *sharepathControllerServer) CreateVolume(ctx context.Context, req *csi.
 		volumeContext["server"] = server
 		volumeContext["path"] = path
 	}
+
+	// TODO: common options
+
 	// fill volumeContext
 	volumeContext["volumeAs"] = "sharepath"
 	if mountType := parameters["mountType"]; mountType != "" {
@@ -103,12 +97,12 @@ func (cs *sharepathControllerServer) CreateVolume(ctx context.Context, req *csi.
 	return resp, nil
 }
 
-func (cs *sharepathControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
+func (cs *sharepathController) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest, pv *corev1.PersistentVolume) (*csi.DeleteVolumeResponse, error) {
 	log.Warn("skip deleting volume as sharepath")
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
-func (cs *sharepathControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+func (cs *sharepathController) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest, pv *corev1.PersistentVolume) (*csi.ControllerExpandVolumeResponse, error) {
 	log.Warn("skip expansion for volume as sharepath")
 	return &csi.ControllerExpandVolumeResponse{CapacityBytes: req.CapacityRange.RequiredBytes}, nil
 }

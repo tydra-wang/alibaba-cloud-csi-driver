@@ -26,8 +26,8 @@ import (
 	sdk "github.com/alibabacloud-go/nas-20170626/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/cloud"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -35,8 +35,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	acv1 "k8s.io/client-go/applyconfigurations/core/v1"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -45,29 +43,27 @@ const (
 	subpathDeletionFinalizer = "csi.alibabacloud.com/nas-subpath-deletion"
 )
 
-type subpathControllerServer struct {
-	fakeProvision           bool
-	enableDeletionFinalizer bool
-	crdClient               dynamic.Interface
-	kubeClient              kubernetes.Interface
-	nasClient               *cloud.NasClientV2
+type subpathController struct {
+	config    *internal.ControllerConfig
+	nasClient *cloud.NasClientV2
 }
 
-func newSubpathControllerServer() (*subpathControllerServer, error) {
+func newSubpathController(config *internal.ControllerConfig) (internal.Controller, error) {
 	nasClient, err := GlobalConfigVar.NasClientFactory.V2(GlobalConfigVar.Region)
 	if err != nil {
 		return nil, err
 	}
-	return &subpathControllerServer{
-		fakeProvision:           GlobalConfigVar.NasFakeProvision,
-		enableDeletionFinalizer: GlobalConfigVar.EnableDeletionFinalzier,
-		crdClient:               GlobalConfigVar.DynamicClient,
-		kubeClient:              GlobalConfigVar.KubeClient,
-		nasClient:               nasClient,
+	return &subpathController{
+		config:    config,
+		nasClient: nasClient,
 	}, nil
 }
 
-func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
+func (cs *subpathController) VolumeAs() string {
+	return "subpath"
+}
+
+func (cs *subpathController) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	// parse parameters
 	parameters := req.Parameters
 	capacity := req.GetCapacityRange().GetRequiredBytes()
@@ -79,7 +75,7 @@ func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.Cr
 	volumeContext := map[string]string{}
 	// using cnfs or not
 	if cnfsName := parameters["containerNetworkFileSystem"]; cnfsName != "" {
-		cnfs, err := cnfsv1beta1.GetCnfsObject(cs.crdClient, cnfsName)
+		cnfs, err := cs.config.CNFSGetter.GetCNFS(ctx, cnfsName)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil, status.Errorf(codes.InvalidArgument, "CNFS not found: %s", cnfsName)
@@ -150,7 +146,7 @@ func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.Cr
 	if filesystemType != cloud.FilesystemTypeStandard {
 		return resp, nil
 	}
-	if cs.fakeProvision {
+	if cs.config.SkipSubpathCreation {
 		logrus.Infof("skip creating subpath directory for %s", req.Name)
 		return resp, nil
 	}
@@ -187,17 +183,15 @@ func (cs *subpathControllerServer) CreateVolume(ctx context.Context, req *csi.Cr
 	return resp, nil
 }
 
-func (cs *subpathControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
-	pv := ctx.Value(contextPVKey).(*corev1.PersistentVolume)
+func (cs *subpathController) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest, pv *corev1.PersistentVolume) (*csi.DeleteVolumeResponse, error) {
 	attributes := pv.Spec.CSI.VolumeAttributes
 	var (
 		filesystemId      string
 		path              = attributes["path"]
 		recycleBinEnabled bool
 	)
-	// using cnfs or not
 	if cnfsName := attributes["containerNetworkFileSystem"]; cnfsName != "" {
-		cnfs, err := cnfsv1beta1.GetCnfsObject(cs.crdClient, cnfsName)
+		cnfs, err := cs.config.CNFSGetter.GetCNFS(ctx, cnfsName)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to get CNFS %s: %v", cnfsName, err)
 		}
@@ -225,24 +219,30 @@ func (cs *subpathControllerServer) DeleteVolume(ctx context.Context, req *csi.De
 			return nil, status.Errorf(codes.Internal, "nas:CancelDirQuota failed: %v", err)
 		}
 	}
-	if !cs.enableDeletionFinalizer {
+	if !cs.config.EnableSubpathFinalizer {
 		logrus.Warnf("deletion finalizer not enabled, skip subpath deletion for %s", req.VolumeId)
 		return &csi.DeleteVolumeResponse{}, nil
 	}
-	// Patch finalizer on PV if need delete or archive subpath. The true deletion/archiving will be executed
+
+	// Patch finalizer on PV if need delete or archive subpath. The actual deletion/archiving will be executed
 	// by storage-controller who is responsible to remove the finalzier.
+
 	// Delete subpath only when parameters["archiveOnDelete"] exists and has a false value.
-	sc, err := cs.kubeClient.StorageV1().StorageClasses().Get(ctx, pv.Spec.StorageClassName, metav1.GetOptions{})
-	if err != nil {
+	// If StorageClass not found, always archive on delete.
+	sc, err := cs.config.KubeClient.StorageV1().StorageClasses().Get(ctx, pv.Spec.StorageClassName, metav1.GetOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
 		return nil, status.Errorf(codes.Internal, err.Error())
 	}
 	archive := true
-	if value, exists := sc.Parameters["archiveOnDelete"]; exists {
-		boolValue, err := strconv.ParseBool(value)
-		if err == nil {
-			archive = boolValue
+	if sc != nil {
+		if value, exists := sc.Parameters["archiveOnDelete"]; exists {
+			boolValue, err := strconv.ParseBool(value)
+			if err == nil {
+				archive = boolValue
+			}
 		}
 	}
+
 	var finalizer string
 	if archive {
 		finalizer = subpathArchiveFinalizer
@@ -262,8 +262,7 @@ func (cs *subpathControllerServer) DeleteVolume(ctx context.Context, req *csi.De
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
-func (cs *subpathControllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
-	pv := ctx.Value(contextPVKey).(*corev1.PersistentVolume)
+func (cs *subpathController) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest, pv *corev1.PersistentVolume) (*csi.ControllerExpandVolumeResponse, error) {
 	attributes := pv.Spec.CSI.VolumeAttributes
 	var (
 		filesystemId string
@@ -271,7 +270,7 @@ func (cs *subpathControllerServer) ControllerExpandVolume(ctx context.Context, r
 	)
 	// using cnfs or not
 	if cnfsName := attributes["containerNetworkFileSystem"]; cnfsName != "" {
-		cnfs, err := cnfsv1beta1.GetCnfsObject(cs.crdClient, cnfsName)
+		cnfs, err := cs.config.CNFSGetter.GetCNFS(ctx, cnfsName)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to get CNFS %s: %v", cnfsName, err)
 		}
@@ -307,7 +306,7 @@ func (cs *subpathControllerServer) ControllerExpandVolume(ctx context.Context, r
 	return &csi.ControllerExpandVolumeResponse{CapacityBytes: capacity}, nil
 }
 
-func (cs *subpathControllerServer) patchFinalizerOnPV(ctx context.Context, pv *corev1.PersistentVolume, finalizer string) error {
+func (cs *subpathController) patchFinalizerOnPV(ctx context.Context, pv *corev1.PersistentVolume, finalizer string) error {
 	ac, err := acv1.ExtractPersistentVolume(pv, finalizerFieldManager)
 	if err != nil {
 		return err
@@ -318,7 +317,7 @@ func (cs *subpathControllerServer) patchFinalizerOnPV(ctx context.Context, pv *c
 		}
 	}
 	ac.WithFinalizers(finalizer)
-	_, err = cs.kubeClient.CoreV1().PersistentVolumes().Apply(ctx, ac, metav1.ApplyOptions{FieldManager: finalizerFieldManager, Force: true})
+	_, err = cs.config.KubeClient.CoreV1().PersistentVolumes().Apply(ctx, ac, metav1.ApplyOptions{FieldManager: finalizerFieldManager, Force: true})
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
@@ -326,7 +325,7 @@ func (cs *subpathControllerServer) patchFinalizerOnPV(ctx context.Context, pv *c
 	return nil
 }
 
-func (cs *subpathControllerServer) getFilesystemType(filesystemId string) (string, error) {
+func (cs *subpathController) getFilesystemType(filesystemId string) (string, error) {
 	resp, err := cs.nasClient.DescribeFileSystemBriefInfo(filesystemId)
 	if err != nil {
 		return "", status.Errorf(codes.Internal, "nas:DescribeFileSystemBriefInfos failed: %v", err)
@@ -340,7 +339,7 @@ func (cs *subpathControllerServer) getFilesystemType(filesystemId string) (strin
 	return filesystemType, nil
 }
 
-func (cs *subpathControllerServer) isRecycleBinEnabled(filesystemId string) (bool, error) {
+func (cs *subpathController) isRecycleBinEnabled(filesystemId string) (bool, error) {
 	resp, err := cs.nasClient.GetRecycleBinAttribute(filesystemId)
 	if err != nil {
 		return false, status.Errorf(codes.Internal, "nas:GetRecycleBinAttribute failed: %v", err)
