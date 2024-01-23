@@ -49,7 +49,7 @@ type subpathController struct {
 }
 
 func newSubpathController(config *internal.ControllerConfig) (internal.Controller, error) {
-	nasClient, err := GlobalConfigVar.NasClientFactory.V2(GlobalConfigVar.Region)
+	nasClient, err := config.NasClientFactory.V2(config.Region)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +219,7 @@ func (cs *subpathController) DeleteVolume(ctx context.Context, req *csi.DeleteVo
 			return nil, status.Errorf(codes.Internal, "nas:CancelDirQuota failed: %v", err)
 		}
 	}
-	if !cs.config.EnableSubpathFinalizer {
+	if cs.config.DisableSubpathFinalizer {
 		logrus.Warnf("deletion finalizer not enabled, skip subpath deletion for %s", req.VolumeId)
 		return &csi.DeleteVolumeResponse{}, nil
 	}

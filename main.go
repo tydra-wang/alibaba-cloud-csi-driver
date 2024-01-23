@@ -198,7 +198,7 @@ func main() {
 		case TypePluginNAS:
 			go func(endPoint string) {
 				defer wg.Done()
-				driver := nas.NewDriver(*nodeID, endPoint, serviceType)
+				driver := nas.NewDriver(meta, endPoint, serviceType)
 				driver.Run()
 			}(endPointName)
 		case TypePluginOSS:
@@ -309,7 +309,7 @@ func main() {
 }
 
 func createPersistentStorage(persistentStoragePath string) error {
-	csilog.Log.Infof("Create Stroage Path: %s", persistentStoragePath)
+	csilog.Log.Infof("Create Storage Path: %s", persistentStoragePath)
 	return os.MkdirAll(persistentStoragePath, os.FileMode(0755))
 }
 

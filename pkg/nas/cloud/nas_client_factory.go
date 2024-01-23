@@ -1,18 +1,35 @@
 package cloud
 
 import (
+	"os"
+	"strconv"
+
 	sdkv1 "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
+	"github.com/sirupsen/logrus"
 	"go.uber.org/ratelimit"
 )
+
+const defaultQps = 2
 
 type NasClientFactory struct {
 	// ratelimiter only takes effect on v2 client
 	limiter ratelimit.Limiter
 }
 
-func NewNasClientFactory(nasQpsLimit int) *NasClientFactory {
+func NewNasClientFactory() *NasClientFactory {
+	qps := defaultQps
+	value, ok := os.LookupEnv("NAS_LIMIT_PERSECOND")
+	if ok {
+		v, err := strconv.Atoi(value)
+		if err != nil {
+			logrus.Errorf("invalid NAS_LIMIT_PERSECOND %q", value)
+		} else {
+			qps = v
+			logrus.Infof("set nas QPS to %d", qps)
+		}
+	}
 	return &NasClientFactory{
-		limiter: ratelimit.New(nasQpsLimit),
+		limiter: ratelimit.New(qps),
 	}
 }
 
