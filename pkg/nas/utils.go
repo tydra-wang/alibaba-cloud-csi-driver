@@ -25,18 +25,14 @@ import (
 	"strings"
 	"time"
 
-	sdkerrors "github.com/aliyun/alibaba-cloud-sdk-go/sdk/errors"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/losetup"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/version"
 	log "github.com/sirupsen/logrus"
 	mountutils "k8s.io/mount-utils"
 )
 
 const (
-	// RegionTag is region id
-	RegionTag = "region-id"
 	// LoopLockFile lock file for nas loopsetup
 	LoopLockFile = "loopsetup.nas.csi.alibabacloud.com.lck"
 	// LoopImgFile image file for nas loopsetup
@@ -50,11 +46,6 @@ const (
 	// see https://help.aliyun.com/zh/nas/modify-the-maximum-number-of-concurrent-nfs-requests
 	TcpSlotTableEntries      = "/proc/sys/sunrpc/tcp_slot_table_entries"
 	TcpSlotTableEntriesValue = "128\n"
-)
-
-var (
-	// KubernetesAlicloudIdentity is the system identity for ecs client request
-	KubernetesAlicloudIdentity = fmt.Sprintf("Kubernetes.Alicloud/CsiProvision.Nas-%s", version.VERSION)
 )
 
 // RoleAuth define STS Token Response
@@ -192,106 +183,6 @@ func createLosetupPv(fullPath string, volSizeBytes int64) error {
 	return exec.Command("mkfs.ext4", "-F", "-m0", fileName).Run()
 }
 
-// /var/lib/kubelet/pods/5e03c7f7-2946-4ee1-ad77-2efbc4fdb16c/volumes/kubernetes.io~csi/nas-f5308354-725a-4fd3-b613-0f5b384bd00e/mount
-func mountLosetupPv(mounter mountutils.Interface, mountPoint string, opt *Options, volumeID string) error {
-	pathList := strings.Split(mountPoint, "/")
-	if len(pathList) != 10 {
-		return fmt.Errorf("mountLosetupPv: mountPoint format error, %s", mountPoint)
-	}
-
-	podID := pathList[5]
-	pvName := pathList[8]
-
-	// /mnt/nasplugin.alibabacloud.com/6c690876-74aa-46f6-a301-da7f4353665d/pv-losetup/
-	nfsPath := filepath.Join(NasMntPoint, podID, pvName)
-	if err := utils.CreateDest(nfsPath); err != nil {
-		return fmt.Errorf("mountLosetupPv: create nfs mountPath error %s ", err.Error())
-	}
-	//mount nas to use losetup dev
-	err := doMount(mounter, "nas", "nfsclient", opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, nfsPath, volumeID, podID)
-	if err != nil {
-		return fmt.Errorf("mountLosetupPv: mount losetup volume failed: %s", err.Error())
-	}
-
-	lockFile := filepath.Join(nfsPath, LoopLockFile)
-	if opt.LoopLock == "true" && isLosetupUsed(mounter, lockFile, opt, volumeID) {
-		return fmt.Errorf("mountLosetupPv: nfs losetup file is used by others %s", lockFile)
-	}
-	imgFile := filepath.Join(nfsPath, LoopImgFile)
-	_, err = os.Stat(imgFile)
-	if err != nil {
-		if os.IsNotExist(err) && opt.LoopImageSize != 0 {
-			if err := createLosetupPv(nfsPath, int64(opt.LoopImageSize)); err != nil {
-				return fmt.Errorf("init loop image file: %w", err)
-			}
-			log.Infof("created loop image file for %s, size: %d", pvName, opt.LoopImageSize)
-		} else {
-			return err
-		}
-	}
-	failedFile := filepath.Join(nfsPath, Resize2fsFailedFilename)
-	if utils.IsFileExisting(failedFile) {
-		// path/to/whatever does not exist
-		cmd := exec.Command("fsck", "-a", imgFile)
-		// cmd := fmt.Sprintf(Resize2fsFailedFixCmd, NsenterCmd, imgFile)
-		err := cmd.Run()
-		if err != nil {
-			return fmt.Errorf("mountLosetupPv: mount nfs losetup error %s", err.Error())
-		}
-		err = os.Remove(failedFile)
-		if err != nil {
-			log.Errorf("mountLosetupPv: failed to remove failed file: %v", err)
-		}
-	}
-	err = mounter.Mount(imgFile, mountPoint, "", []string{"loop"})
-	if err != nil {
-		return fmt.Errorf("mountLosetupPv: mount nfs losetup error %s", err.Error())
-	}
-	lockContent := GlobalConfigVar.NodeID + ":" + GlobalConfigVar.NodeIP
-	if err := os.WriteFile(lockFile, ([]byte)(lockContent), 0644); err != nil {
-		return err
-	}
-	return nil
-}
-
-func isLosetupUsed(mounter mountutils.Interface, lockFile string, opt *Options, volumeID string) bool {
-	if !utils.IsFileExisting(lockFile) {
-		return false
-	}
-	fileCotent := utils.GetFileContent(lockFile)
-	contentParts := strings.Split(fileCotent, ":")
-	if len(contentParts) != 2 || contentParts[0] == "" || contentParts[1] == "" {
-		return true
-	}
-
-	oldNodeID := contentParts[0]
-	oldNodeIP := contentParts[1]
-	if GlobalConfigVar.NodeID == oldNodeID {
-		mounted, err := isLosetupMount(volumeID)
-		if err != nil {
-			log.Errorf("can not determine whether %s losetup image used: %v", volumeID, err)
-			return true
-		}
-		if !mounted {
-			log.Warnf("Lockfile(%s) exist, but Losetup image not mounted %s.", lockFile, opt.Path)
-			return false
-		}
-		log.Warnf("Lockfile(%s) exist, but Losetup image mounted %s.", lockFile, opt.Path)
-		return true
-	}
-
-	stat, err := utils.Ping(oldNodeIP)
-	if err != nil {
-		log.Warnf("Ping node %s, but get error: %s, consider as volume used", oldNodeIP, err.Error())
-		return true
-	}
-	if stat.PacketLoss == 100 {
-		log.Warnf("Cannot connect to node %s, consider the node as shutdown(%s).", oldNodeIP, lockFile)
-		return false
-	}
-	return true
-}
-
 func unmountLosetupPv(mounter mountutils.Interface, mountPoint string) error {
 	pathList := strings.Split(mountPoint, "/")
 	if len(pathList) != 10 {
@@ -396,13 +287,4 @@ func cleanupMountpoint(mounter mountutils.Interface, mountPath string) (err erro
 		err = mountutils.CleanupMountPoint(mountPath, mounter, false)
 	}
 	return
-}
-
-func isMountTargetNotFoundError(err error) bool {
-	var serverErr *sdkerrors.ServerError
-	if !errors.As(err, &serverErr) || serverErr == nil {
-		return false
-	}
-	code := serverErr.ErrorCode()
-	return code == "InvalidParam.MountTargetDomain" || code == "InvalidMountTarget.NotFound"
 }

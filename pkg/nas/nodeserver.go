@@ -30,21 +30,20 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/dadi"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/losetup"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	mountutils "k8s.io/mount-utils"
 )
 
 type nodeServer struct {
-	clientSet *kubernetes.Clientset
-	crdClient dynamic.Interface
-	mounter   mountutils.Interface
-	locks     *utils.VolumeLocks
+	config  *internal.NodeConfig
+	mounter mountutils.Interface
+	locks   *utils.VolumeLocks
 }
 
 // Options struct definition
@@ -113,16 +112,18 @@ const (
 	NativeClient = "nativeclient"
 )
 
-// newNodeServer create the csi node server
-func newNodeServer() *nodeServer {
+func newNodeServer(config *internal.NodeConfig) *nodeServer {
+	// configure efc dadi service discovery
+	if config.EnableEFCCache {
+		go dadi.Run(config.KubeClient)
+	}
 	if err := checkSystemNasConfig(); err != nil {
 		log.Errorf("failed to config /proc/sys/sunrpc/tcp_slot_table_entries: %v", err)
 	}
 	return &nodeServer{
-		clientSet: GlobalConfigVar.KubeClient,
-		crdClient: GlobalConfigVar.DynamicClient,
-		mounter:   NewNasMounter(),
-		locks:     utils.NewVolumeLocks(),
+		config:  config,
+		mounter: NewNasMounter(),
+		locks:   utils.NewVolumeLocks(),
 	}
 }
 
@@ -244,7 +245,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	if len(opt.Server) == 0 {
-		cnfs, err := v1beta1.GetCnfsObject(ns.crdClient, cnfsName)
+		cnfs, err := ns.config.CNFSGetter.GetCNFS(ctx, cnfsName)
 		if err != nil {
 			return nil, err
 		}
@@ -284,8 +285,8 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	// running in runc/runv mode
-	if GlobalConfigVar.RunTimeClass == MixRunTimeMode {
-		if runtime, err := utils.GetPodRunTime(req, ns.clientSet); err != nil {
+	if ns.config.EnableMixRuntime {
+		if runtime, err := utils.GetPodRunTime(req, ns.config.KubeClient); err != nil {
 			return nil, status.Errorf(codes.Internal, "NodePublishVolume: cannot get pod runtime: %v", err)
 		} else if runtime == RunvRunTimeMode {
 			if err := utils.CreateDest(mountPath); err != nil {
@@ -318,11 +319,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return nil, errors.New("host is empty, should input nas domain")
 	}
 	// check network connection
-	doNfsPortCheck := GlobalConfigVar.NasPortCheck
-	if opt.MountType == SkipMountType {
-		doNfsPortCheck = false
-	}
-	if (opt.MountProtocol == MountProtocolNFS || opt.MountProtocol == MountProtocolAliNas) && doNfsPortCheck {
+	if ns.config.EnablePortCheck && opt.MountType != SkipMountType && (opt.MountProtocol == MountProtocolNFS || opt.MountProtocol == MountProtocolAliNas) {
 		conn, err := net.DialTimeout("tcp", opt.Server+":"+NasPortnum, time.Second*time.Duration(30))
 		if err != nil {
 			log.Errorf("NAS: Cannot connect to nas host: %s", opt.Server)
@@ -385,8 +382,8 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	// do losetup nas logical
-	if GlobalConfigVar.LosetupEnable && opt.MountType == LosetupType {
-		if err := mountLosetupPv(ns.mounter, mountPath, opt, req.VolumeId); err != nil {
+	if ns.config.EnableLosetup && opt.MountType == LosetupType {
+		if err := ns.mountLosetupPv(mountPath, opt, req.VolumeId); err != nil {
 			log.Errorf("NodePublishVolume: mount losetup volume(%s) error %s", req.VolumeId, err.Error())
 			return nil, errors.New("NodePublishVolume, mount Losetup volume error with: " + err.Error())
 		}
@@ -466,6 +463,106 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
+// /var/lib/kubelet/pods/5e03c7f7-2946-4ee1-ad77-2efbc4fdb16c/volumes/kubernetes.io~csi/nas-f5308354-725a-4fd3-b613-0f5b384bd00e/mount
+func (ns *nodeServer) mountLosetupPv(mountPoint string, opt *Options, volumeID string) error {
+	pathList := strings.Split(mountPoint, "/")
+	if len(pathList) != 10 {
+		return fmt.Errorf("mountLosetupPv: mountPoint format error, %s", mountPoint)
+	}
+
+	podID := pathList[5]
+	pvName := pathList[8]
+
+	// /mnt/nasplugin.alibabacloud.com/6c690876-74aa-46f6-a301-da7f4353665d/pv-losetup/
+	nfsPath := filepath.Join(NasMntPoint, podID, pvName)
+	if err := utils.CreateDest(nfsPath); err != nil {
+		return fmt.Errorf("mountLosetupPv: create nfs mountPath error %s ", err.Error())
+	}
+	//mount nas to use losetup dev
+	err := doMount(ns.mounter, "nas", "nfsclient", opt.MountProtocol, opt.Server, opt.Path, opt.Vers, opt.Options, nfsPath, volumeID, podID)
+	if err != nil {
+		return fmt.Errorf("mountLosetupPv: mount losetup volume failed: %s", err.Error())
+	}
+
+	lockFile := filepath.Join(nfsPath, LoopLockFile)
+	if opt.LoopLock == "true" && ns.isLosetupUsed(lockFile, opt, volumeID) {
+		return fmt.Errorf("mountLosetupPv: nfs losetup file is used by others %s", lockFile)
+	}
+	imgFile := filepath.Join(nfsPath, LoopImgFile)
+	_, err = os.Stat(imgFile)
+	if err != nil {
+		if os.IsNotExist(err) && opt.LoopImageSize != 0 {
+			if err := createLosetupPv(nfsPath, int64(opt.LoopImageSize)); err != nil {
+				return fmt.Errorf("init loop image file: %w", err)
+			}
+			log.Infof("created loop image file for %s, size: %d", pvName, opt.LoopImageSize)
+		} else {
+			return err
+		}
+	}
+	failedFile := filepath.Join(nfsPath, Resize2fsFailedFilename)
+	if utils.IsFileExisting(failedFile) {
+		// path/to/whatever does not exist
+		cmd := exec.Command("fsck", "-a", imgFile)
+		// cmd := fmt.Sprintf(Resize2fsFailedFixCmd, NsenterCmd, imgFile)
+		err := cmd.Run()
+		if err != nil {
+			return fmt.Errorf("mountLosetupPv: mount nfs losetup error %s", err.Error())
+		}
+		err = os.Remove(failedFile)
+		if err != nil {
+			log.Errorf("mountLosetupPv: failed to remove failed file: %v", err)
+		}
+	}
+	err = ns.mounter.Mount(imgFile, mountPoint, "", []string{"loop"})
+	if err != nil {
+		return fmt.Errorf("mountLosetupPv: mount nfs losetup error %s", err.Error())
+	}
+	lockContent := ns.config.NodeName + ":" + ns.config.NodeIP
+	if err := os.WriteFile(lockFile, ([]byte)(lockContent), 0644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ns *nodeServer) isLosetupUsed(lockFile string, opt *Options, volumeID string) bool {
+	if !utils.IsFileExisting(lockFile) {
+		return false
+	}
+	fileCotent := utils.GetFileContent(lockFile)
+	contentParts := strings.Split(fileCotent, ":")
+	if len(contentParts) != 2 || contentParts[0] == "" || contentParts[1] == "" {
+		return true
+	}
+
+	oldNodeName := contentParts[0]
+	oldNodeIP := contentParts[1]
+	if ns.config.NodeName == oldNodeName {
+		mounted, err := isLosetupMount(volumeID)
+		if err != nil {
+			log.Errorf("can not determine whether %s losetup image used: %v", volumeID, err)
+			return true
+		}
+		if !mounted {
+			log.Warnf("Lockfile(%s) exist, but Losetup image not mounted %s.", lockFile, opt.Path)
+			return false
+		}
+		log.Warnf("Lockfile(%s) exist, but Losetup image mounted %s.", lockFile, opt.Path)
+		return true
+	}
+
+	stat, err := utils.Ping(oldNodeIP)
+	if err != nil {
+		log.Warnf("Ping node %s, but get error: %s, consider as volume used", oldNodeIP, err.Error())
+		return true
+	}
+	if stat.PacketLoss == 100 {
+		log.Warnf("Cannot connect to node %s, consider the node as shutdown(%s).", oldNodeIP, lockFile)
+		return false
+	}
+	return true
+}
+
 func validateNodeUnpublishVolumeRequest(req *csi.NodeUnpublishVolumeRequest) error {
 	valid, err := utils.ValidatePath(req.GetTargetPath())
 	if !valid {
@@ -493,7 +590,7 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	log.Infof("NodeUnpublishVolume: unmount volume on %s successfully", targetPath)
 
 	// when mixruntime mode enabled, try to remove ../alibabacloudcsiplugin.json
-	if GlobalConfigVar.RunTimeClass == MixRunTimeMode {
+	if ns.config.EnableMixRuntime {
 		fileName := filepath.Join(targetPath, utils.CsiPluginRunTimeFlagFile)
 		err := os.Remove(fileName)
 		if err != nil {
@@ -506,7 +603,7 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	}
 
 	// when losetup enabled, try to cleanup mountpoint under /mnt/nasplugin.alibabacloud.com/
-	if GlobalConfigVar.LosetupEnable {
+	if ns.config.EnableLosetup {
 		if err := unmountLosetupPv(ns.mounter, targetPath); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
@@ -531,7 +628,7 @@ func (ns *nodeServer) NodeUnstageVolume(
 func (ns *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (
 	*csi.NodeExpandVolumeResponse, error) {
 	log.Infof("NodeExpandVolume: nas expand volume with %v", req)
-	if GlobalConfigVar.LosetupEnable {
+	if ns.config.EnableLosetup {
 		if err := ns.LosetupExpandVolume(req); err != nil {
 			return nil, fmt.Errorf("NodeExpandVolume: error with %v", err)
 		}
@@ -616,7 +713,7 @@ func (ns *nodeServer) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetC
 
 	// Nas Metric enable config
 	nodeSvcCap := []*csi.NodeServiceCapability{nscap2}
-	if GlobalConfigVar.MetricEnable {
+	if ns.config.EnableVolumeStats {
 		nodeSvcCap = []*csi.NodeServiceCapability{nscap, nscap2}
 	}
 

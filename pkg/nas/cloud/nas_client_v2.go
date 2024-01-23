@@ -16,6 +16,7 @@ import (
 
 func newNasClientV2(region string) (*sdk.Client, error) {
 	config := new(openapi.Config).
+		SetUserAgent(KubernetesAlicloudIdentity).
 		SetRegionId(region).
 		SetGlobalParameters(&openapi.GlobalParameters{
 			Queries: map[string]*string{

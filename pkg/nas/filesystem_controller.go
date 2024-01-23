@@ -27,6 +27,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	aliNas "github.com/aliyun/alibaba-cloud-sdk-go/services/nas"
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/cloud"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
@@ -35,6 +36,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 )
 
 const (
@@ -98,11 +100,15 @@ type nasVolumeArgs struct {
 }
 
 type filesystemController struct {
-	config *internal.ControllerConfig
+	eventRecorder record.EventRecorder
+	config        *internal.ControllerConfig
 }
 
 func newFilesystemController(config *internal.ControllerConfig) (internal.Controller, error) {
-	return &filesystemController{config: config}, nil
+	return &filesystemController{
+		eventRecorder: utils.NewEventRecorder(),
+		config:        config,
+	}, nil
 }
 
 func (cs *filesystemController) VolumeAs() string {
@@ -203,7 +209,7 @@ func (cs *filesystemController) CreateVolume(ctx context.Context, req *csi.Creat
 		if err != nil {
 			str := fmt.Sprintf("CreateVolume: responseID[%s], fail to add default tags filesystem with ID: %s, err: %s", tagResourcesResponse.RequestId, fileSystemID, err.Error())
 			e := status.Error(codes.Internal, str)
-			utils.CreateEvent(cs.config.EventRecorder, ref, v1.EventTypeWarning, AddDefaultTagsError, e.Error())
+			utils.CreateEvent(cs.eventRecorder, ref, v1.EventTypeWarning, AddDefaultTagsError, e.Error())
 		} else {
 			log.Infof("CreateVolume: Volume: %s, Successful Add Nas filesystem tags with ID: %s, with requestID: %s", pvName, fileSystemID, createFileSystemsResponse.RequestId)
 		}
@@ -476,7 +482,7 @@ func (cs *filesystemController) DeleteVolume(ctx context.Context, req *csi.Delet
 		describeMountTargetRequest.MountTargetDomain = nfsServer
 		_, err := nasClient.DescribeMountTargets(describeMountTargetRequest)
 		if err != nil {
-			if isMountTargetNotFoundError(err) {
+			if cloud.IsMountTargetNotFoundError(err) {
 				log.Infof("DeleteVolume: Volume %s MountTarget %s already delete", req.VolumeId, nfsServer)
 				isMountTargetDelete = true
 			}
