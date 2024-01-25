@@ -58,26 +58,31 @@ type RoleAuth struct {
 	Code            string
 }
 
-// doMount execute the mount command for nas dir
-func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsServer, nfsPath, nfsVers, mountOptions, mountPoint, volumeID, podUID string) error {
-	source := fmt.Sprintf("%s:%s", nfsServer, nfsPath)
-	var combinedOptions []string
-	if mountOptions != "" {
-		combinedOptions = append(combinedOptions, mountOptions)
-	}
+func doMount(mounter mountutils.Interface, opt *Options, targetPath, volumeId, podUid string) error {
 	var (
-		mountFstype    string
-		isPathNotFound func(error) bool
+		mountFstype     string
+		source          string
+		combinedOptions []string
+		isPathNotFound  func(error) bool
 	)
-	switch clientType {
+	if opt.Accesspoint != "" {
+		source = fmt.Sprintf("%s:%s", opt.Accesspoint, opt.Path)
+	} else {
+		source = fmt.Sprintf("%s:%s", opt.Server, opt.Path)
+	}
+	if opt.Options != "" {
+		combinedOptions = append(combinedOptions, opt.Options)
+	}
+
+	switch opt.ClientType {
 	case EFCClient:
-		combinedOptions = append(combinedOptions, "efc", fmt.Sprintf("bindtag=%s", volumeID), fmt.Sprintf("client_owner=%s", podUID))
-		switch fsType {
+		combinedOptions = append(combinedOptions, "efc", fmt.Sprintf("bindtag=%s", volumeId), fmt.Sprintf("client_owner=%s", podUid))
+		switch opt.FSType {
 		case "standard":
 		case "cpfs":
 			combinedOptions = append(combinedOptions, "protocol=nfs3")
 		default:
-			return errors.New("EFC Client don't support this storage type:" + fsType)
+			return errors.New("EFC Client don't support this storage type:" + opt.FSType)
 		}
 		mountFstype = "alinas"
 		// err = mounter.Mount(source, mountPoint, "alinas", combinedOptions)
@@ -85,24 +90,30 @@ func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsS
 			return strings.Contains(err.Error(), "Failed to bind mount")
 		}
 	case NativeClient:
-		switch fsType {
+		switch opt.FSType {
 		case "cpfs":
 		default:
-			return errors.New("Native Client don't support this storage type:" + fsType)
+			return errors.New("Native Client don't support this storage type:" + opt.FSType)
 		}
 		mountFstype = "cpfs"
 	default:
 		//NFS Mount(Capacdity/Performance Extreme Nas、Cpfs2.0, AliNas)
-		versStr := fmt.Sprintf("vers=%s", nfsVers)
-		if !strings.Contains(mountOptions, versStr) {
+		versStr := fmt.Sprintf("vers=%s", opt.Vers)
+		if !strings.Contains(opt.Options, versStr) {
 			combinedOptions = append(combinedOptions, versStr)
 		}
-		mountFstype = nfsProtocol
+		if opt.Accesspoint != "" {
+			mountFstype = "alinas"
+			// must enable tls when using accesspoint
+			combinedOptions = addTLSMountOptions(combinedOptions)
+		} else {
+			mountFstype = opt.MountProtocol
+		}
 		isPathNotFound = func(err error) bool {
 			return strings.Contains(err.Error(), "reason given by server: No such file or directory") || strings.Contains(err.Error(), "access denied by server while mounting")
 		}
 	}
-	err := mounter.Mount(source, mountPoint, mountFstype, combinedOptions)
+	err := mounter.Mount(source, targetPath, mountFstype, combinedOptions)
 	if err == nil {
 		return nil
 	}
@@ -111,17 +122,17 @@ func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsS
 	}
 
 	rootPath := "/"
-	if fsType == "cpfs" || mountFstype == MountProtocolCPFSNFS || strings.Contains(nfsServer, "extreme.nas.aliyuncs.com") {
+	if opt.FSType == "cpfs" || mountFstype == MountProtocolCPFSNFS || strings.Contains(opt.Server, "extreme.nas.aliyuncs.com") {
 		rootPath = "/share"
 	}
-	relPath, relErr := filepath.Rel(rootPath, nfsPath)
+	relPath, relErr := filepath.Rel(rootPath, opt.Path)
 	if relErr != nil || relPath == "." {
 		return err
 	}
-	rootSource := fmt.Sprintf("%s:%s", nfsServer, rootPath)
+	rootSource := fmt.Sprintf("%s:%s", opt.Server, rootPath)
 	log.Infof("trying to create subpath %s", rootSource)
 	_ = os.MkdirAll(NasTempMntPath, os.ModePerm)
-	tmpPath, err := os.MkdirTemp(NasTempMntPath, volumeID+"_")
+	tmpPath, err := os.MkdirTemp(NasTempMntPath, volumeId+"_")
 	if err != nil {
 		return err
 	}
@@ -135,7 +146,7 @@ func doMount(mounter mountutils.Interface, fsType, clientType, nfsProtocol, nfsS
 	if err := cleanupMountpoint(mounter, tmpPath); err != nil {
 		log.Errorf("failed to cleanup tmp mountpoint %s: %v", tmpPath, err)
 	}
-	return mounter.Mount(source, mountPoint, mountFstype, combinedOptions)
+	return mounter.Mount(source, targetPath, mountFstype, combinedOptions)
 }
 
 // check system config,
@@ -169,6 +180,21 @@ func ParseMountFlags(mntOptions []string) (string, string) {
 		vers = "3"
 	}
 	return vers, strings.Join(otherOptions, ",")
+}
+
+func addTLSMountOptions(baseOptions []string) []string {
+	for _, options := range baseOptions {
+		for _, option := range mounter.SplitMountOptions(options) {
+			if option == "" {
+				continue
+			}
+			key, _, _ := strings.Cut(option, "=")
+			if key == "tls" {
+				return baseOptions
+			}
+		}
+	}
+	return append(baseOptions, "tls")
 }
 
 func createLosetupPv(fullPath string, volSizeBytes int64) error {
@@ -220,21 +246,6 @@ func isLosetupMount(volumeID string) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-func isValidCnfsParameter(server string, cnfsName string) error {
-	if len(server) == 0 && len(cnfsName) == 0 {
-		msg := "Server and Cnfs need to be configured at least one."
-		log.Errorf(msg)
-		return errors.New(msg)
-	}
-
-	if len(server) != 0 && len(cnfsName) != 0 {
-		msg := "Server and Cnfs can only be configured to use one."
-		log.Errorf(msg)
-		return errors.New(msg)
-	}
-	return nil
 }
 
 // GetFsIDByNasServer func is get fsID from serverName

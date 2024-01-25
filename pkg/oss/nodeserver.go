@@ -295,32 +295,15 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 	if opt.UseSharedPath {
 		sharedPath := GetGlobalMountPath(req.GetVolumeId())
-		notMnt, err := ossMounter.IsLikelyNotMountPoint(sharedPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				if err := os.MkdirAll(sharedPath, os.ModePerm); err != nil {
-					log.Errorf("NodePublishVolume: mkdir %s: %v", sharedPath, err)
-					return nil, status.Error(codes.Internal, err.Error())
-				}
-				notMnt = true
-			} else {
-				log.Errorf("NodePublishVolume: check mountpoint %s: %v", sharedPath, err)
-				return nil, status.Error(codes.Internal, err.Error())
-			}
+		// serialize node publish operations on the same volume when using sharedpath
+		if lock := ns.sharedPathLock.TryAcquire(req.VolumeId); !lock {
+			log.Errorf("NodePublishVolume: aborted because failed to acquire volume %s lock", req.VolumeId)
+			return nil, status.Errorf(codes.Aborted, "NodePublishVolume operation on shared path of volume %s already exists", req.VolumeId)
 		}
-		if notMnt {
-			// serialize node publish operations on the same volume when using sharedpath
-			if lock := ns.sharedPathLock.TryAcquire(req.VolumeId); !lock {
-				log.Errorf("NodePublishVolume: aborted because failed to acquire volume %s lock", req.VolumeId)
-				return nil, status.Errorf(codes.Aborted, "NodePublishVolume operation on shared path of volume %s already exists", req.VolumeId)
-			}
-			defer ns.sharedPathLock.Release(req.VolumeId)
-			if err := doMount(ossMounter, sharedPath, *opt, mountOptions); err != nil {
-				log.Errorf("NodePublishVolume: failed to mount")
-				return nil, err
-			}
-		} else {
-			log.Infof("NodePublishVolume: sharedpath %s already mounted", sharedPath)
+		defer ns.sharedPathLock.Release(req.VolumeId)
+		if err := doMount(ossMounter, sharedPath, *opt, mountOptions); err != nil {
+			log.Errorf("NodePublishVolume: failed to mount")
+			return nil, err
 		}
 		log.Infof("NodePublishVolume:: Start mount operation from source [%s] to dest [%s]", sharedPath, mountPath)
 		if err := ossMounter.Mount(sharedPath, mountPath, "", []string{"bind"}); err != nil {

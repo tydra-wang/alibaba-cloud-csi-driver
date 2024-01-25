@@ -18,6 +18,8 @@ package nas
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestParseMountFlags(t *testing.T) {
@@ -70,6 +72,33 @@ func TestParseMountFlags(t *testing.T) {
 			if got1 != tt.want1 {
 				t.Errorf("ParseMountFlags() got1 = %v, want %v", got1, tt.want1)
 			}
+		})
+	}
+}
+
+func Test_addTLSMountOptions(t *testing.T) {
+	type args struct {
+		baseOptions []string
+	}
+	tests := []struct {
+		name string
+		args args
+		want []string
+	}{
+		{
+			"already set tls",
+			args{[]string{"vers=3,tls"}},
+			[]string{"vers=3,tls"},
+		},
+		{
+			"tls not set",
+			args{[]string{"vers=3", "nolock"}},
+			[]string{"vers=3", "nolock", "tls"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, addTLSMountOptions(tt.args.baseOptions))
 		})
 	}
 }
