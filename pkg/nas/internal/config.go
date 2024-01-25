@@ -19,7 +19,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-const configMapName = "csi-plugin"
+const (
+	configMapName      = "csi-plugin"
+	configMapNamespace = "kube-system"
+)
 
 type ControllerConfig struct {
 	// cluster info
@@ -53,7 +56,7 @@ func GetControllerConfig(meta *metadata.Metadata) (*ControllerConfig, error) {
 		NasClientFactory: cloud.NewNasClientFactory(),
 	}
 
-	cm, err := kubeClient.CoreV1().ConfigMaps("kube-system").Get(context.Background(), configMapName, metav1.GetOptions{})
+	cm, err := kubeClient.CoreV1().ConfigMaps(configMapNamespace).Get(context.Background(), configMapName, metav1.GetOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, err
@@ -95,7 +98,7 @@ func GetNodeConfig() (*NodeConfig, error) {
 	}
 
 	// get csi-plugin configmap
-	cm, err := kubeClient.CoreV1().ConfigMaps("kube-system").Get(context.Background(), configMapName, metav1.GetOptions{})
+	cm, err := kubeClient.CoreV1().ConfigMaps(configMapNamespace).Get(context.Background(), configMapName, metav1.GetOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, err
