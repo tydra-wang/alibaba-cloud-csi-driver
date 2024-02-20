@@ -306,9 +306,6 @@ func (cs *filesystemController) CreateVolume(ctx context.Context, req *csi.Creat
 		volumeContext["vers"] = nfsVersion
 	}
 	volumeContext["deleteVolume"] = strconv.FormatBool(nasVol.DeleteVolume)
-	if value, ok := req.Parameters["options"]; ok && value != "" {
-		volumeContext["options"] = value
-	}
 
 	volSizeBytes := req.GetCapacityRange().GetRequiredBytes()
 	csiTargetVol := &csi.Volume{

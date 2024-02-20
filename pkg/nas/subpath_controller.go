@@ -89,7 +89,7 @@ func (cs *subpathController) CreateVolume(ctx context.Context, req *csi.CreateVo
 		}
 		filesystemId = cnfs.Status.FsAttributes.FilesystemID
 		if filesystemId == "" {
-			return nil, status.Error(codes.InvalidArgument, "missing server or filesystemId in CNFS status")
+			return nil, status.Error(codes.InvalidArgument, "missing filesystemId in CNFS status")
 		}
 		filesystemType = cnfs.Status.FsAttributes.FilesystemType
 		// set volumeContext
@@ -121,17 +121,6 @@ func (cs *subpathController) CreateVolume(ctx context.Context, req *csi.CreateVo
 			volumeContext["loopImageSize"] = strconv.FormatInt(capacity, 10)
 		}
 		volumeContext["mountType"] = mountType
-	}
-	if mode := parameters["mode"]; mode != "" {
-		volumeContext["mode"] = mode
-		modeType := parameters["modeType"]
-		if modeType == "" {
-			modeType = "non-recursive"
-		}
-		volumeContext["modeType"] = modeType
-	}
-	if options := parameters["options"]; options != "" {
-		volumeContext["options"] = options
 	}
 
 	resp := &csi.CreateVolumeResponse{
@@ -168,7 +157,7 @@ func (cs *subpathController) CreateVolume(ctx context.Context, req *csi.CreateVo
 	if parameters["mountType"] != "losetup" && (parameters["volumeCapacity"] == "true" || parameters["allowVolumeExpansion"] == "true") {
 		quota := (capacity + GiB - 1) >> 30
 		resp.Volume.CapacityBytes = quota << 30
-		volumeContext["volumeCapacity"] = "true"
+		resp.Volume.VolumeContext["volumeCapacity"] = "true"
 		if err := cs.nasClient.SetDirQuota(&sdk.SetDirQuotaRequest{
 			FileSystemId: &filesystemId,
 			Path:         &path,

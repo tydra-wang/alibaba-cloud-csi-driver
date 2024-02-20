@@ -67,23 +67,10 @@ func (cs *sharepathController) CreateVolume(ctx context.Context, req *csi.Create
 		volumeContext["path"] = path
 	}
 
-	// TODO: common options
-
 	// fill volumeContext
 	volumeContext["volumeAs"] = "sharepath"
 	if mountType := parameters["mountType"]; mountType != "" {
 		volumeContext["mountType"] = mountType
-	}
-	if mode := parameters["mode"]; mode != "" {
-		volumeContext["mode"] = mode
-		modeType := parameters["modeType"]
-		if modeType == "" {
-			modeType = "non-recursive"
-		}
-		volumeContext["modeType"] = modeType
-	}
-	if options := parameters["options"]; options != "" {
-		volumeContext["options"] = options
 	}
 
 	capacity := req.GetCapacityRange().GetRequiredBytes()

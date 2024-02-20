@@ -124,3 +124,18 @@ func (c *NasClientV2) GetRecycleBinAttribute(filesystemId string) (*sdk.GetRecyc
 	req := &sdk.GetRecycleBinAttributeRequest{FileSystemId: &filesystemId}
 	return c.client.GetRecycleBinAttribute(req)
 }
+
+func (c *NasClientV2) CreateAccesspoint(req *sdk.CreateAccessPointRequest) (*sdk.CreateAccessPointResponse, error) {
+	c.limiter.Take()
+	resp, err := c.client.CreateAccessPoint(req)
+	log := logrus.WithFields(logrus.Fields{
+		"request":  req,
+		"response": resp,
+	})
+	if err == nil {
+		log.Info("nas:CreateAccessPoint succeeded")
+	} else {
+		log.Errorf("nas:CreateAccessPoint failed: %v", err)
+	}
+	return resp, err
+}

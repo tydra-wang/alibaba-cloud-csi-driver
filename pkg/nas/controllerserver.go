@@ -87,9 +87,24 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		return nil, err
 	}
 	resp, err := controller.CreateVolume(ctx, req)
-	if err == nil {
-		log.WithField("response", resp).Info("CreateVolume: succeeded")
+	if err != nil {
+		return nil, err
 	}
+	log.WithField("response", resp).Info("CreateVolume: succeeded")
+
+	parameters := req.Parameters
+	if mode := parameters["mode"]; mode != "" {
+		resp.Volume.VolumeContext["mode"] = mode
+		modeType := parameters["modeType"]
+		if modeType == "" {
+			modeType = "non-recursive"
+		}
+		resp.Volume.VolumeContext["modeType"] = modeType
+	}
+	if options := parameters["options"]; options != "" {
+		resp.Volume.VolumeContext["options"] = options
+	}
+
 	return resp, err
 }
 

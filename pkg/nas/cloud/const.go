@@ -8,6 +8,7 @@ import (
 
 const (
 	FilesystemTypeStandard = "standard"
+	DefaultAccessGroup     = "DEFAULT_VPC_GROUP_NAME"
 )
 
 var KubernetesAlicloudIdentity = fmt.Sprintf("Kubernetes.Alicloud/CsiProvision.Nas-%s", version.VERSION)
