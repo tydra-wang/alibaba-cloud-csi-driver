@@ -126,4 +126,5 @@ replace (
 	sigs.k8s.io/yaml => sigs.k8s.io/yaml v1.1.0
 )
 
+// TODO: Remove this once github.com/alibabacloud-go/nas-20170626 releases an update with support for AccessPoint-related APIs.
 replace github.com/alibabacloud-go/nas-20170626/v3 => ./staging/src/github.com/alibabacloud-go/nas-20170626
