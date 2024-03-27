@@ -258,3 +258,37 @@ subjects:
 - kind: ServiceAccount
   name: alicloud-csi-plugin
   namespace: kube-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: alicloud-csi-fuse
+  name: csi-fuse-mounter
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+- apiGroups: [""]
+  resourceNames: ["csi-ossfs-credentials"] 
+  resources: ["secrets"]
+  verbs: ["get", "patch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: alicloud-csi-fuse
+  name: csi-fuse-mounter
+subjects:
+- kind: ServiceAccount
+  name: alicloud-csi-plugin
+  namespace: kube-system
+roleRef:
+  kind: Role
+  name: csi-fuse-mounter
+  apiGroup: rbac.authorization.k8s.io
+

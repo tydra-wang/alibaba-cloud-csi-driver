@@ -25,7 +25,9 @@ import (
 )
 
 const fuseMountTimeout = time.Second * 30
-const fuseMountNamespace = "kube-system"
+
+// const fuseMountNamespace = "kube-system"
+const fuseMountNamespace = "alicloud-csi-fuse"
 const fuseServieAccountName = "csi-fuse-ossfs"
 
 const (
