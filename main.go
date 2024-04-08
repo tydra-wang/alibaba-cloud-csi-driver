@@ -78,11 +78,25 @@ const (
 	ExtenderAgent = "agent"
 )
 
+type DriverFlags []string
+
+func (f *DriverFlags) String() string {
+	// only enable disk plugin by default
+	if len(*f) == 0 {
+		return TypePluginDISK
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *DriverFlags) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
 var (
 	endpoint        = flag.String("endpoint", "unix://tmp/csi.sock", "CSI endpoint")
 	nodeID          = flag.String("nodeid", "", "node id")
 	runAsController = flag.Bool("run-as-controller", false, "Only run as controller service")
-	driver          = flag.String("driver", TypePluginDISK, "CSI Driver")
 	// Deprecated: rootDir is instead by KUBELET_ROOT_DIR env.
 	rootDir = flag.String("rootdir", "/var/lib/kubelet/csi-plugins", "Kubernetes root directory")
 )
@@ -94,6 +108,8 @@ type globalMetricConfig struct {
 
 // Nas CSI Plugin
 func main() {
+	var drivers DriverFlags
+	flag.Var(&drivers, "driver", "Enable specific types of CSI Drivers")
 	flag.Parse()
 	serviceType := os.Getenv(utils.ServiceType)
 
@@ -120,11 +136,10 @@ func main() {
 	// setLogAttribute(logAttribute)
 	// log.AddHook(rotateHook(logAttribute))
 
-	log.Infof("Multi CSI Driver Name: %s, nodeID: %s, endPoints: %s", *driver, *nodeID, *endpoint)
+	log.Infof("Multi CSI Driver Name: %s, nodeID: %s, endPoints: %s", drivers.String(), *nodeID, *endpoint)
 	log.Infof("CSI Driver, Version: %s, Build time: %s", version.VERSION, version.BUILDTIME)
 
-	multiDriverNames := *driver
-	driverNames := strings.Split(multiDriverNames, ",")
+	driverNames := strings.Split(drivers.String(), ",")
 	var wg sync.WaitGroup
 
 	// Storage devops
@@ -263,7 +278,7 @@ func main() {
 }
 
 func createPersistentStorage(persistentStoragePath string) error {
-	log.Infof("Create Stroage Path: %s", persistentStoragePath)
+	log.Infof("Create Storage Path: %s", persistentStoragePath)
 	return os.MkdirAll(persistentStoragePath, os.FileMode(0755))
 }
 
