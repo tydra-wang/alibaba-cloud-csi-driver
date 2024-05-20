@@ -352,19 +352,19 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	// if volume set mountType as skipmount;
-	if opt.MountType == SkipMountType {
+	if opt.MountType == SkipMountType || runtimeVal == utils.RundRunTimeTag {
 		if features.FunctionalMutableFeatureGate.Enabled(features.RundCSIProtocol3) {
 			mountInfo := directvolume.MountInfo{
 				Source:     opt.Server,
 				DeviceType: directvolume.DeviceTypeNFS,
 				FSType:     "",
-				MountOpts:  strings.Split(opt.Options, ","),
+				MountOpts:  []string{opt.Options},
 				Extra:      map[string]string{},
 			}
 			log.Info("NodePublishVolume(rund3.0): Starting add mount info to DirectVolume")
 			err := directvolume.AddMountInfo(filepath.Dir(mountPath), mountInfo)
 			if err != nil {
-				log.Errorf("NodePublishVolume(rund3.0): Adding mount infomation to DirectVolume failed: %v", err)
+				log.Errorf("NodePublishVolume(rund3.0): Adding mount information to DirectVolume failed: %v", err)
 				return nil, status.Error(codes.Internal, "NAS: failed to mount volume in rund-csi 3.0")
 			}
 			return &csi.NodePublishVolumeResponse{}, nil
@@ -593,7 +593,7 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	// try to remove csi 3.0 file when featuregate is enabled
 	if features.FunctionalMutableFeatureGate.Enabled(features.RundCSIProtocol3) {
 		if err := directvolume.Remove(filepath.Dir(targetPath)); err != nil {
-			log.Errorf("NodeUnpublishVolume(rund3.0): Remove mount infomation to DirectVolume failed: %v", err)
+			log.Errorf("NodeUnpublishVolume(rund3.0): Remove mount information to DirectVolume failed: %v", err)
 			return nil, status.Error(codes.Internal, "NAS: failed to unmount volume in rund-csi 3.0")
 		}
 	}
