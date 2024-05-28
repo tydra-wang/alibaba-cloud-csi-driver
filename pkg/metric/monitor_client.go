@@ -20,7 +20,7 @@ const (
 	storageMonitorSvcName       = "storage-monitor-service"
 	storageMonitorPort          = "11280"
 	storageMonitorClientTimeout = time.Millisecond * 500
-	monitorIPUpdateInterval     = time.Minute * 30
+	monitorIPUpdateInterval     = time.Second * 30
 )
 
 type StorageMonitorClient struct {
@@ -38,8 +38,8 @@ func NewStorageMonitorClient(kubeClient kubernetes.Interface) *StorageMonitorCli
 	}
 
 	var (
-		lastError   error
-		lastLogTime time.Time
+		lastError    error
+		lastWarnTime time.Time
 	)
 
 	go func() {
@@ -49,11 +49,13 @@ func NewStorageMonitorClient(kubeClient kubernetes.Interface) *StorageMonitorCli
 			err := c.updateClusterIP()
 			if err != nil {
 				now := time.Now()
-				// ignore recent and duplicated error
-				if !(lastError != nil && lastError.Error() == err.Error() && now.Sub(lastLogTime) < monitorIPUpdateInterval*24) {
-					log.Warnf("failed to update clusterIP of storage-monitor: %v", err)
-					lastLogTime = now
+				// use debug level when logging duplicated errors in a limited duration
+				logLevel := log.DebugLevel
+				if !(lastError != nil && lastError.Error() == err.Error() && now.Sub(lastWarnTime) < monitorIPUpdateInterval*24) {
+					lastWarnTime = now
+					logLevel = log.WarnLevel
 				}
+				log.StandardLogger().Logf(logLevel, "failed to update clusterIP of storage-monitor: %v", err)
 			}
 			lastError = err
 		}
