@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+option go_package = "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter/proxy";
+
+service MountProxy {
+	rpc Mount(MountRequest) returns (MountResponse) {};
+}
+
+message MountRequest {
+  string source = 1;
+  string target = 2;
+  string fstype = 3;
+  repeated string options = 4;
+}
+
+message MountResponse {
+}
