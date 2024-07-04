@@ -7,6 +7,7 @@ import (
 
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter/proxy"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	mountutils "k8s.io/mount-utils"
 )
 
@@ -37,7 +38,7 @@ func (m *ProxyMounter) Mount(source string, target string, fstype string, option
 }
 
 func NewProxyMounter(proxyEndpoint string) (mountutils.Interface, error) {
-	cc, err := grpc.Dial(proxyEndpoint)
+	cc, err := grpc.Dial(proxyEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
@@ -47,4 +48,8 @@ func NewProxyMounter(proxyEndpoint string) (mountutils.Interface, error) {
 		client:    client,
 		timeout:   proxyDefaultTimeout,
 	}, nil
+}
+
+func NewProxyMounterUnix(socket string) (mountutils.Interface, error) {
+	return NewProxyMounter("unix://" + socket)
 }

@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	alinasUtilsProxySocket = "/var/run/csi/proxy/alinas.sock"
+	alinasUtilsProxySocket = "/var/run/cnfs/alinas/alinas.sock"
 )
 
 type NasMounter struct {
@@ -19,19 +19,13 @@ type NasMounter struct {
 }
 
 func (m *NasMounter) Mount(source string, target string, fstype string, options []string) error {
-	log := logrus.WithFields(logrus.Fields{
-		"source":       source,
-		"target":       target,
-		"mountOptions": options,
-		"fstype":       fstype,
-	})
-
 	mt := m.Interface
 	switch fstype {
 	case "alinas", "cpfs-nfs":
 		if utils.IsFileExisting(alinasUtilsProxySocket) {
+			logrus.Infof("using alinas mount proxy because %s detected", alinasUtilsProxySocket)
 			var err error
-			mt, err = mounter.NewProxyMounter("unix://" + alinasUtilsProxySocket)
+			mt, err = mounter.NewProxyMounterUnix(alinasUtilsProxySocket)
 			if err != nil {
 				return fmt.Errorf("init proxy mounter: %w", err)
 			}
@@ -41,6 +35,12 @@ func (m *NasMounter) Mount(source string, target string, fstype string, options 
 	case "cpfs":
 		mt = m.connectorMounter
 	}
+	log := logrus.WithFields(logrus.Fields{
+		"source":       source,
+		"target":       target,
+		"mountOptions": options,
+		"fstype":       fstype,
+	})
 	err := mt.Mount(source, target, fstype, options)
 	if err != nil {
 		log.Errorf("failed to mount: %v", err)
