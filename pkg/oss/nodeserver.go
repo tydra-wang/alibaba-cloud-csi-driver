@@ -28,14 +28,13 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cloud/metadata"
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
+	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/features"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	mountutils "k8s.io/mount-utils"
 )
@@ -45,7 +44,7 @@ type nodeServer struct {
 	*csicommon.DefaultNodeServer
 	nodeName        string
 	clientset       kubernetes.Interface
-	dynamicClient   dynamic.Interface
+	cnfsGetter      cnfsv1beta1.CNFSGetter
 	sharedPathLock  *utils.VolumeLocks
 	ossfsMounterFac *mounter.ContainerizedFuseMounterFactory
 }
@@ -190,7 +189,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	if len(opt.Bucket) == 0 {
-		cnfs, err := v1beta1.GetCnfsObject(ns.dynamicClient, cnfsName)
+		cnfs, err := ns.cnfsGetter.GetCNFS(ctx, cnfsName)
 		if err != nil {
 			return nil, err
 		}
@@ -422,7 +421,7 @@ func checkOssOptions(opt *Options) error {
 	}
 
 	if opt.Encrypted != "" && opt.Encrypted != EncryptedTypeKms && opt.Encrypted != EncryptedTypeAes256 {
-		return errors.New("Oss encrypted error: invalid SSE encryted type")
+		return errors.New("Oss encrypted error: invalid SSE encrypted type")
 	}
 
 	return nil

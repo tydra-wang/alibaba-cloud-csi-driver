@@ -28,7 +28,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -36,7 +35,6 @@ import (
 type controllerServer struct {
 	client kubernetes.Interface
 	*csicommon.DefaultControllerServer
-	crdClient dynamic.Interface
 }
 
 func getOssVolumeOptions(req *csi.CreateVolumeRequest) *Options {

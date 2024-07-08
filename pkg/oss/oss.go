@@ -23,6 +23,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cloud/metadata"
+	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/options"
@@ -33,7 +34,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -79,24 +79,10 @@ func NewDriver(nodeID, endpoint string, m metadata.MetadataProvider, runAsContro
 }
 
 func newControllerServer(driver *csicommon.CSIDriver) csi.ControllerServer {
-	config, err := clientcmd.BuildConfigFromFlags(options.MasterURL, options.Kubeconfig)
-	if err != nil {
-		log.Fatalf("failed to build kubeconfig: %v", err)
-	}
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		log.Fatalf("Create client set is failed, err: %v", err)
-	}
-
-	crdClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		log.Fatalf("Create dynamic client is failed, err: %v", err)
-	}
-
+	clientset := kubernetes.NewForConfigOrDie(options.MustGetRestConfig())
 	c := &controllerServer{
 		client:                  clientset,
 		DefaultControllerServer: csicommon.NewDefaultControllerServer(driver),
-		crdClient:               crdClient,
 	}
 	return c
 }
@@ -108,37 +94,26 @@ func newNodeServer(driver *csicommon.CSIDriver, m metadata.MetadataProvider) *no
 		log.Fatal("env KUBE_NODE_NAME is empty")
 	}
 
-	cfg, err := clientcmd.BuildConfigFromFlags(options.MasterURL, options.Kubeconfig)
-	if err != nil {
-		log.Fatalf("Build kubeconfig is failed, err: %s", err.Error())
-	}
+	cfg := options.MustGetRestConfig()
+	clientset := kubernetes.NewForConfigOrDie(cfg)
+	cnfsGetter := cnfsv1beta1.NewCNFSGetter(dynamic.NewForConfigOrDie(cfg))
 
-	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		log.Fatalf("Create client set is failed, err: %v", err)
-	}
 	configmap, err := clientset.CoreV1().ConfigMaps("kube-system").Get(context.Background(), "csi-plugin", metav1.GetOptions{})
 	if err != nil && !errors.IsNotFound(err) {
 		log.Fatalf("failed to get configmap kube-system/csi-plugin: %v", err)
-	}
-
-	crdClient, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		log.Fatalf("Create crd client is failed, err: %v", err)
 	}
 
 	return &nodeServer{
 		DefaultNodeServer: csicommon.NewDefaultNodeServer(driver),
 		nodeName:          nodeName,
 		clientset:         clientset,
-		dynamicClient:     crdClient,
+		cnfsGetter:        cnfsGetter,
 		sharedPathLock:    utils.NewVolumeLocks(),
 		ossfsMounterFac:   mounter.NewContainerizedFuseMounterFactory(mounter.NewFuseOssfs(configmap, m), clientset, nodeName),
 		metadata:          m,
 	}
 }
 
-// Run start a newNodeServer
 func (d *OSS) Run() {
 	common.RunCSIServer(d.endpoint, csicommon.NewDefaultIdentityServer(d.driver), d.controllerServer, d.nodeServer)
 }
