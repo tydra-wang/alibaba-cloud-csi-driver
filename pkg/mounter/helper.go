@@ -25,6 +25,25 @@ func SplitMountOptions(s string) []string {
 	return list
 }
 
+// FindMountOption finds the value of target option in a slice of mount options.
+func FindMountOption(options []string, target string) (string, bool) {
+	for _, subOptions := range options {
+		for _, option := range SplitMountOptions(subOptions) {
+			if option == "" {
+				continue
+			}
+			if option == target {
+				return "", true
+			}
+			key, value, found := strings.Cut(option, "=")
+			if found && key == target {
+				return value, true
+			}
+		}
+	}
+	return "", false
+}
+
 // Copy from https://github.com/kubernetes/kubernetes/blob/b5ba7bc4f5f49760c821cae2f152a8000922e72e/staging/src/k8s.io/apimachinery/pkg/api/validation/objectmeta.go#L43
 // ValidateAnnotations validates that a set of annotations are correctly defined.
 func ValidateAnnotations(annotations map[string]string) error {

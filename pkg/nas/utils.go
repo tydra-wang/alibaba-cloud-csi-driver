@@ -72,9 +72,7 @@ func doMount(mounter mountutils.Interface, opt *Options, targetPath, volumeId, p
 	} else {
 		source = fmt.Sprintf("%s:%s", opt.Server, opt.Path)
 	}
-	if opt.Options != "" {
-		combinedOptions = append(combinedOptions, opt.Options)
-	}
+	combinedOptions = opt.MountOptions
 
 	switch opt.ClientType {
 	case EFCClient:
@@ -100,16 +98,33 @@ func doMount(mounter mountutils.Interface, opt *Options, targetPath, volumeId, p
 		mountFstype = "cpfs"
 	default:
 		//NFS Mount(Capacdity/Performance Extreme Nas、Cpfs2.0, AliNas)
-		versStr := fmt.Sprintf("vers=%s", opt.Vers)
-		if !strings.Contains(opt.Options, versStr) {
-			combinedOptions = append(combinedOptions, versStr)
-		}
 		if opt.Accesspoint != "" {
 			mountFstype = "alinas"
 			// must enable tls when using accesspoint
 			combinedOptions = addTLSMountOptions(combinedOptions)
 		} else {
 			mountFstype = opt.MountProtocol
+		}
+		if mountFstype == MountProtocolNFS {
+			if len(combinedOptions) == 0 {
+				// set nfs default mount options
+				switch opt.Vers {
+				case "3", "":
+					combinedOptions = []string{
+						"nolock,proto=tcp,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport",
+						"vers=3",
+					}
+				default:
+					combinedOptions = []string{
+						"noresvport",
+						"vers=" + opt.Vers,
+					}
+				}
+			} else {
+				if opt.Vers != "" {
+					combinedOptions = addVersMountOption(combinedOptions, opt.Vers)
+				}
+			}
 		}
 		isPathNotFound = func(err error) bool {
 			return strings.Contains(err.Error(), "reason given by server: No such file or directory") || strings.Contains(err.Error(), "access denied by server while mounting")
@@ -160,42 +175,20 @@ func checkSystemNasConfig() error {
 	return os.WriteFile(TcpSlotTableEntries, []byte(TcpSlotTableEntriesValue), os.ModePerm)
 }
 
-// ParseMountFlags parse mountOptions
-func ParseMountFlags(mntOptions []string) (string, string) {
-	var vers string
-	var otherOptions []string
-	for _, options := range mntOptions {
-		for _, option := range mounter.SplitMountOptions(options) {
-			if option == "" {
-				continue
-			}
-			key, value, found := strings.Cut(option, "=")
-			if found && key == "vers" {
-				vers = value
-			} else {
-				otherOptions = append(otherOptions, option)
-			}
-		}
+func addTLSMountOptions(baseOptions []string) []string {
+	_, exists := mounter.FindMountOption(baseOptions, "tls")
+	if !exists {
+		return append(baseOptions, "tls")
 	}
-	if vers == "3.0" {
-		vers = "3"
-	}
-	return vers, strings.Join(otherOptions, ",")
+	return baseOptions
 }
 
-func addTLSMountOptions(baseOptions []string) []string {
-	for _, options := range baseOptions {
-		for _, option := range mounter.SplitMountOptions(options) {
-			if option == "" {
-				continue
-			}
-			key, _, _ := strings.Cut(option, "=")
-			if key == "tls" {
-				return baseOptions
-			}
-		}
+func addVersMountOption(baseOptions []string, vers string) []string {
+	_, exists := mounter.FindMountOption(baseOptions, "vers")
+	if !exists {
+		return append(baseOptions, "vers="+vers)
 	}
-	return append(baseOptions, "tls")
+	return baseOptions
 }
 
 func createLosetupPv(fullPath string, volSizeBytes int64) error {
@@ -272,8 +265,8 @@ func saveVolumeData(opt *Options, mountPath string) error {
 	// save volume data to json file
 	volumeData := map[string]string{}
 	volumeData["csi.alibabacloud.com/version"] = opt.Vers
-	if len(opt.Options) != 0 {
-		volumeData["csi.alibabacloud.com/options"] = opt.Options
+	if len(opt.MountOptions) != 0 {
+		volumeData["csi.alibabacloud.com/options"] = strings.Join(opt.MountOptions, ",")
 	}
 	if len(opt.Server) != 0 {
 		volumeData["csi.alibabacloud.com/server"] = opt.Server

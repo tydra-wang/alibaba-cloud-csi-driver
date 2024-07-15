@@ -70,19 +70,19 @@ func newNodeServer(config *internal.NodeConfig) *nodeServer {
 
 // Options struct definition
 type Options struct {
-	Server        string `json:"server"`
-	Accesspoint   string `json:"accesspoint"`
-	Path          string `json:"path"`
-	Vers          string `json:"vers"`
-	Mode          string `json:"mode"`
-	ModeType      string `json:"modeType"`
-	Options       string `json:"options"`
-	MountType     string `json:"mountType"`
-	LoopImageSize int    `json:"loopImageSize"`
-	LoopLock      string `json:"loopLock"`
-	MountProtocol string `json:"mountProtocol"`
-	ClientType    string `json:"clientType"`
-	FSType        string `json:"fsType"`
+	Server        string   `json:"server"`
+	Accesspoint   string   `json:"accesspoint"`
+	Path          string   `json:"path"`
+	Vers          string   `json:"vers"`
+	Mode          string   `json:"mode"`
+	ModeType      string   `json:"modeType"`
+	MountOptions  []string `json:"mountOptions"`
+	MountType     string   `json:"mountType"`
+	LoopImageSize int      `json:"loopImageSize"`
+	LoopLock      string   `json:"loopLock"`
+	MountProtocol string   `json:"mountProtocol"`
+	ClientType    string   `json:"clientType"`
+	FSType        string   `json:"fsType"`
 }
 
 // RunvNasOptions struct definition
@@ -200,11 +200,22 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		case "path":
 			opt.Path = value
 		case "vers":
-			opt.Vers = value
+			log.Warnf("NodePublishVolume: volumeAttributes.vers is deprecated, please add vers option in .spec.mountOptions")
+			switch value {
+			case "3.0":
+				opt.Vers = "3"
+			case "4":
+				opt.Vers = "4.0"
+			default:
+				opt.Vers = value
+			}
 		case "mode":
 			opt.Mode = value
 		case "options":
-			opt.Options = value
+			log.Warnf("NodePublishVolume: volumeAttributes.options is deprecated, please use .spec.mountOptions")
+			if value != "none" {
+				opt.MountOptions = []string{value}
+			}
 		case "modetype":
 			opt.ModeType = value
 		case "mounttype":
@@ -249,18 +260,11 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	// version/options used first in mountOptions
 	if req.VolumeCapability != nil && req.VolumeCapability.GetMount() != nil {
 		mntOptions := req.VolumeCapability.GetMount().MountFlags
-		parseVers, parseOptions := ParseMountFlags(mntOptions)
-		if parseVers != "" {
-			if opt.Vers != "" {
-				log.Warnf("NodePublishVolume: Vers(%s) (in volumeAttributes) is ignored as Vers(%s) also configured in mountOptions", opt.Vers, parseVers)
+		if len(mntOptions) > 0 {
+			if len(opt.MountOptions) > 0 {
+				log.Warnf("NodePublishVolume: ignore volumeAttributes.options for PV with mount options")
 			}
-			opt.Vers = parseVers
-		}
-		if parseOptions != "" {
-			if opt.Options != "" {
-				log.Warnf("NodePublishVolume: Options(%s) (in volumeAttributes) is ignored as Options(%s) also configured in mountOptions", opt.Options, parseOptions)
-			}
-			opt.Options = parseOptions
+			opt.MountOptions = mntOptions
 		}
 	}
 
@@ -269,7 +273,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	if runtimeVal == utils.RunvRunTimeTag {
 		fileName := filepath.Join(mountPath, utils.CsiPluginRunTimeFlagFile)
 		runvOptions := RunvNasOptions{}
-		runvOptions.Options = opt.Options
+		runvOptions.Options = strings.Join(opt.MountOptions, ",")
 		runvOptions.Server = opt.Server
 		runvOptions.ModeType = opt.ModeType
 		runvOptions.Mode = opt.Mode
@@ -299,26 +303,11 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	if !strings.HasPrefix(opt.Path, "/") {
 		return nil, errors.New("the path format is illegal")
 	}
-	if opt.Vers == "" || opt.Vers == "3.0" {
-		opt.Vers = "3"
-	} else if opt.Vers == "4" {
-		opt.Vers = "4.0"
-	}
 
 	if strings.Contains(opt.Server, "extreme.nas.aliyuncs.com") {
 		if opt.Vers != "3" {
 			return nil, errors.New("Extreme nas only support nfs v3 " + opt.Server)
 		}
-	}
-	// check options, config defaults for aliyun nas
-	if opt.Options == "" {
-		if opt.Vers == "3" {
-			opt.Options = "nolock,proto=tcp,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport"
-		} else {
-			opt.Options = "noresvport"
-		}
-	} else if strings.ToLower(opt.Options) == "none" {
-		opt.Options = ""
 	}
 
 	notMounted, err := ns.mounter.IsLikelyNotMountPoint(mountPath)
@@ -342,7 +331,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 				Source:     opt.Server,
 				DeviceType: directvolume.DeviceTypeNFS,
 				FSType:     "",
-				MountOpts:  []string{opt.Options},
+				MountOpts:  opt.MountOptions,
 				Extra:      map[string]string{},
 			}
 			log.Info("NodePublishVolume(rund3.0): Starting add mount info to DirectVolume")

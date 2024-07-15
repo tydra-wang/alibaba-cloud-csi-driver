@@ -22,60 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestParseMountFlags(t *testing.T) {
-	type args struct {
-		mntOptions []string
-	}
-	tests := []struct {
-		name  string
-		args  args
-		want  string
-		want1 string
-	}{
-		{
-			"vers=3",
-			args{[]string{"mnt=/test", "vers=3.0"}},
-			"3", "mnt=/test",
-		},
-		{
-			"vers=3.0",
-			args{[]string{"mnt=/test", "vers=3.0"}},
-			"3", "mnt=/test",
-		},
-		{
-			"vers=4",
-			args{[]string{"mnt=/test", "vers=4"}},
-			"4", "mnt=/test",
-		},
-		{
-			"vers=4.0",
-			args{[]string{"mnt=/test", "vers=4.0"}},
-			"4.0", "mnt=/test",
-		},
-		{
-			"vers=4.1",
-			args{[]string{"mnt=/test", "vers=4.1"}},
-			"4.1", "mnt=/test",
-		},
-		{
-			"no vers",
-			args{[]string{"mnt=/test", "a=b,,c=d"}},
-			"", "mnt=/test,a=b,c=d",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, got1 := ParseMountFlags(tt.args.mntOptions)
-			if got != tt.want {
-				t.Errorf("ParseMountFlags() got = %v, want %v", got, tt.want)
-			}
-			if got1 != tt.want1 {
-				t.Errorf("ParseMountFlags() got1 = %v, want %v", got1, tt.want1)
-			}
-		})
-	}
-}
-
 func Test_addTLSMountOptions(t *testing.T) {
 	type args struct {
 		baseOptions []string
