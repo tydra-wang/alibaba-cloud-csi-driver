@@ -180,9 +180,9 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
-	var mountOptions []string
-	if req.VolumeCapability != nil && req.VolumeCapability.GetMount() != nil {
-		mountOptions = req.VolumeCapability.GetMount().MountFlags
+	mountOptions, err := opt.MakeMountOptions(req.VolumeCapability)
+	if err != nil {
+		return nil, err
 	}
 
 	regionID, _ := ns.metadata.Get(metadata.RegionID)
@@ -202,26 +202,6 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to setup ossfs credential secret: %v", err)
 		}
-	}
-
-	switch opt.Encrypted {
-	case EncryptedTypeAes256:
-		mountOptions = append(mountOptions, "use_sse")
-	case EncryptedTypeKms:
-		if opt.KmsKeyId == "" {
-			mountOptions = append(mountOptions, "use_sse=kmsid")
-		} else {
-			mountOptions = append(mountOptions, fmt.Sprintf("use_sse=kmsid:%s", opt.KmsKeyId))
-		}
-	}
-
-	if opt.ReadOnly {
-		mountOptions = append(mountOptions, "ro")
-	}
-
-	// set use_metrics to enabled monitoring by default
-	if features.FunctionalMutableFeatureGate.Enabled(features.UpdatedOssfsVersion) {
-		mountOptions = append(mountOptions, "use_metrics")
 	}
 
 	if regionID == "" {
@@ -265,9 +245,6 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			}
 			defer ns.sharedPathLock.Release(req.VolumeId)
 			utils.WriteSharedMetricsInfo(metricsPathPrefix, req, OssFsType, "oss", opt.Bucket, sharedPath)
-			if opt.MetricsTop != "" {
-				mountOptions = append(mountOptions, fmt.Sprintf("metrics_top=%s", opt.MetricsTop))
-			}
 			if err := doMount(ossMounter, sharedPath, *opt, mountOptions); err != nil {
 				log.Errorf("NodePublishVolume: failed to mount")
 				return nil, err
@@ -502,4 +479,37 @@ func setCNFSOptions(ctx context.Context, cnfsGetter cnfsv1beta1.CNFSGetter, opts
 	opts.Bucket = cnfs.Status.FsAttributes.BucketName
 	opts.URL = cnfs.Status.FsAttributes.EndPoint.Internal
 	return nil
+}
+
+func (o *Options) MakeMountOptions(volumeCapability *csi.VolumeCapability) ([]string, error) {
+	var mountOptions []string
+	if volumeCapability != nil && volumeCapability.GetMount() != nil {
+		mountOptions = volumeCapability.GetMount().MountFlags
+	}
+
+	mountOptions, err := parseOtherOpts(o.OtherOpts)
+	if err != nil {
+		return nil, err
+	}
+	switch o.Encrypted {
+	case EncryptedTypeAes256:
+		mountOptions = append(mountOptions, "use_sse")
+	case EncryptedTypeKms:
+		if o.KmsKeyId == "" {
+			mountOptions = append(mountOptions, "use_sse=kmsid")
+		} else {
+			mountOptions = append(mountOptions, fmt.Sprintf("use_sse=kmsid:%s", o.KmsKeyId))
+		}
+	}
+	if o.ReadOnly {
+		mountOptions = append(mountOptions, "ro")
+	}
+	// set use_metrics to enabled monitoring by default
+	if features.FunctionalMutableFeatureGate.Enabled(features.UpdatedOssfsVersion) {
+		mountOptions = append(mountOptions, "use_metrics")
+	}
+	if o.MetricsTop != "" {
+		mountOptions = append(mountOptions, fmt.Sprintf("metrics_top=%s", o.MetricsTop))
+	}
+	return mountOptions, nil
 }
