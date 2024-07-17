@@ -94,7 +94,7 @@ func (f *fuseOssfs) addPodMeta(pod *corev1.Pod) {
 }
 
 func (f *fuseOssfs) buildPodSpec(
-	source, target, fstype string, authCfg *AuthConfig, options, mountFlags []string, nodeName, volumeId string,
+	c *FusePodContext, source, target, fstype string, options, mountFlags []string,
 ) (spec corev1.PodSpec, _ error) {
 	spec.TerminationGracePeriodSeconds = tea.Int64(120)
 	targetVolume := corev1.Volume{
@@ -197,7 +197,7 @@ func (f *fuseOssfs) buildPodSpec(
 		container.VolumeMounts = append(container.VolumeMounts, mimeVolumeMount)
 	}
 
-	buildAuthSpec(nodeName, volumeId, target, authCfg, &spec, &container, &options)
+	buildAuthSpec(c.NodeName, c.VolumeId, target, c.AuthConfig, &spec, &container, &options)
 
 	args := mountutils.MakeMountArgs(source, target, "", options)
 	args = append(args, mountFlags...)
@@ -207,7 +207,7 @@ func (f *fuseOssfs) buildPodSpec(
 
 	spec.Containers = []corev1.Container{container}
 	spec.RestartPolicy = corev1.RestartPolicyOnFailure
-	spec.NodeName = nodeName
+	spec.NodeName = c.NodeName
 	spec.HostNetwork = true
 	spec.PriorityClassName = "system-node-critical"
 	spec.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists}}

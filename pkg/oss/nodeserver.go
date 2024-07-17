@@ -51,8 +51,8 @@ type nodeServer struct {
 
 // Options contains options for target oss
 type Options struct {
-	directAssigned bool
-
+	directAssigned      bool
+	CNFSName            string
 	Bucket              string `json:"bucket"`
 	URL                 string `json:"url"`
 	OtherOpts           string `json:"otherOpts"`
@@ -116,109 +116,22 @@ func validateNodePublishVolumeRequest(req *csi.NodePublishVolumeRequest) error {
 }
 
 func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
-	// logout oss paras
 	log.Infof("NodePublishVolume:: Starting Mount volume: %s mount with req: %+v", req.VolumeId, req)
 	mountPath := req.GetTargetPath()
 	if err := validateNodePublishVolumeRequest(req); err != nil {
 		return nil, err
 	}
-	var cnfsName string
-	opt := &Options{}
-	opt.UseSharedPath = true
-	opt.FuseType = OssFsType
-	for key, value := range req.VolumeContext {
-		key = strings.ToLower(key)
-		if key == "bucket" {
-			opt.Bucket = strings.TrimSpace(value)
-		} else if key == "url" {
-			opt.URL = strings.TrimSpace(value)
-		} else if key == "otheropts" {
-			opt.OtherOpts = strings.TrimSpace(value)
-		} else if key == "akid" {
-			opt.AkID = strings.TrimSpace(value)
-		} else if key == "aksecret" {
-			opt.AkSecret = strings.TrimSpace(value)
-		} else if key == "path" {
-			if v := strings.TrimSpace(value); v == "" {
-				opt.Path = "/"
-			} else {
-				opt.Path = v
-			}
-		} else if key == "usesharedpath" {
-			if useSharedPath, err := strconv.ParseBool(value); err == nil {
-				opt.UseSharedPath = useSharedPath
-			} else {
-				log.Warnf("invalid useSharedPath: %q", value)
-			}
-		} else if key == "authtype" {
-			opt.AuthType = strings.ToLower(strings.TrimSpace(value))
-		} else if key == "rolename" {
-			opt.RoleName = strings.TrimSpace(value)
-		} else if key == "rolearn" {
-			opt.RoleArn = strings.TrimSpace(value)
-		} else if key == "oidcproviderarn" {
-			opt.OidcProviderArn = strings.TrimSpace(value)
-		} else if key == "serviceaccountname" {
-			opt.ServiceAccountName = strings.TrimSpace(value)
-		} else if key == "secretproviderclass" {
-			opt.SecretProviderClass = strings.TrimSpace(value)
-		} else if key == "fusetype" {
-			opt.FuseType = strings.ToLower(strings.TrimSpace(value))
-		} else if key == "metricstop" {
-			opt.MetricsTop = strings.ToLower(strings.TrimSpace(value))
-		} else if key == "containernetworkfilesystem" {
-			cnfsName = value
-		} else if key == optDirectAssigned {
-			opt.directAssigned, _ = strconv.ParseBool(strings.TrimSpace(value))
-		} else if key == "encrypted" {
-			opt.Encrypted = strings.ToLower(strings.TrimSpace(value))
-		} else if key == "kmskeyid" {
-			opt.KmsKeyId = value
-		}
-	}
 
+	opt := parseOptions(req.VolumeContext, req.Secrets, req.VolumeCapability)
+	if err := setCNFSOptions(ctx, ns.cnfsGetter, opt); err != nil {
+		return nil, err
+	}
 	if req.Readonly {
 		opt.ReadOnly = true
-	} else {
-		switch req.VolumeCapability.AccessMode.GetMode() {
-		case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER, csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
-			opt.ReadOnly = false
-		default:
-			opt.ReadOnly = true
-		}
 	}
-
-	if len(opt.Bucket) == 0 {
-		cnfs, err := ns.cnfsGetter.GetCNFS(ctx, cnfsName)
-		if err != nil {
-			return nil, err
-		}
-		if cnfs.Status.FsAttributes.EndPoint == nil {
-			return nil, errors.New("Cnfs " + cnfsName + " is not ready, endpoint is empty.")
-		}
-		opt.Bucket = cnfs.Status.FsAttributes.BucketName
-		opt.URL = cnfs.Status.FsAttributes.EndPoint.Internal
-	}
-
-	// Default oss path
-	if opt.Path == "" {
-		opt.Path = "/"
-	}
-
-	// support set ak by secret
-	if opt.AkID == "" || opt.AkSecret == "" {
-		if value, ok := req.Secrets[AkID]; ok {
-			opt.AkID = value
-		}
-		if value, ok := req.Secrets[AkSecret]; ok {
-			opt.AkSecret = value
-		}
-	}
-
 	// check parameters
 	if err := checkOssOptions(opt); err != nil {
-		log.Errorf("Check oss input error: %s", err.Error())
-		return nil, errors.New("Check oss input error: " + err.Error())
+		return nil, status.Errorf(codes.InvalidArgument, err.Error())
 	}
 
 	argStr := fmt.Sprintf("Bucket: %s, url: %s, , OtherOpts: %s, Path: %s, UseSharedPath: %s, authType: %s, encrypted: %s, kmsid: %s",
@@ -228,26 +141,26 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	if opt.directAssigned {
 		return ns.publishDirectVolume(ctx, req, opt)
 	}
-	var ossMounter mountutils.Interface
-	switch opt.FuseType {
-	case OssFsType, "":
-		// When useSharedPath options is set to false,
-		// mount operations need to be atomic to ensure that no fuse pods are left behind in case of failure.
-		// Because kubelet will not call NodeUnpublishVolume when NodePublishVolume never succeeded.
 
-		var rrsaCfg *mounter.RrsaConfig
-		var err error
-		if opt.AuthType == mounter.AuthTypeRRSA {
-			rrsaCfg, err = getRRSAConfig(opt, ns.metadata)
-			if err != nil {
-				return nil, errors.New("Get RoleArn and OidcProviderArn for RRSA error: " + err.Error())
-			}
+	authCfg := &mounter.AuthConfig{AuthType: opt.AuthType, SecretProviderClassName: opt.SecretProviderClass}
+	if opt.AuthType == mounter.AuthTypeRRSA {
+		rrsaCfg, err := getRRSAConfig(opt, ns.metadata)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "Get RoleArn and OidcProviderArn for RRSA error: %v", err)
 		}
-		authCfg := &mounter.AuthConfig{AuthType: opt.AuthType, RrsaConfig: rrsaCfg, SecretProviderClassName: opt.SecretProviderClass}
-		ossMounter = ns.ossfsMounterFac.NewFuseMounter(ctx, req.VolumeId, authCfg, !opt.UseSharedPath)
-	default:
-		return nil, status.Errorf(codes.InvalidArgument, "unknown fuseType: %q", opt.FuseType)
+		authCfg.RrsaConfig = rrsaCfg
 	}
+
+	// When useSharedPath options is set to false,
+	// mount operations need to be atomic to ensure that no fuse pods are left behind in case of failure.
+	// Because kubelet will not call NodeUnpublishVolume when NodePublishVolume never succeeded.
+	ossMounter := ns.ossfsMounterFac.NewFuseMounter(&mounter.FusePodContext{
+		Context:    ctx,
+		Namespace:  "kube-system",
+		NodeName:   ns.nodeName,
+		VolumeId:   req.VolumeId,
+		AuthConfig: authCfg,
+	}, !opt.UseSharedPath)
 
 	notMnt, err := mountutils.IsNotMountPoint(ossMounter, mountPath)
 	if err != nil {
@@ -293,16 +206,12 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 	switch opt.Encrypted {
 	case EncryptedTypeAes256:
-		if opt.FuseType == OssFsType {
-			mountOptions = append(mountOptions, "use_sse")
-		}
+		mountOptions = append(mountOptions, "use_sse")
 	case EncryptedTypeKms:
-		if opt.FuseType == OssFsType {
-			if opt.KmsKeyId == "" {
-				mountOptions = append(mountOptions, "use_sse=kmsid")
-			} else {
-				mountOptions = append(mountOptions, fmt.Sprintf("use_sse=kmsid:%s", opt.KmsKeyId))
-			}
+		if opt.KmsKeyId == "" {
+			mountOptions = append(mountOptions, "use_sse=kmsid")
+		} else {
+			mountOptions = append(mountOptions, fmt.Sprintf("use_sse=kmsid:%s", opt.KmsKeyId))
 		}
 	}
 
@@ -372,13 +281,11 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			return nil, errors.New("Create oss volume fail: " + err.Error())
 		}
 	} else {
-		if opt.FuseType == OssFsType {
-			metricsTop := defaultMetricsTop
-			if opt.MetricsTop != "" {
-				metricsTop = opt.MetricsTop
-			}
-			utils.WriteMetricsInfo(metricsPathPrefix, req, metricsTop, OssFsType, "oss", opt.Bucket)
+		metricsTop := defaultMetricsTop
+		if opt.MetricsTop != "" {
+			metricsTop = opt.MetricsTop
 		}
+		utils.WriteMetricsInfo(metricsPathPrefix, req, metricsTop, OssFsType, "oss", opt.Bucket)
 		if err := doMount(ossMounter, mountPath, *opt, mountOptions); err != nil {
 			return nil, err
 		}
@@ -390,6 +297,10 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 // Check oss options
 func checkOssOptions(opt *Options) error {
+	if opt.FuseType != OssFsType {
+		return errors.New("only ossfs fuse type supported")
+	}
+
 	if opt.URL == "" || opt.Bucket == "" {
 		return errors.New("Oss parameters error: Url/Bucket empty")
 	}
@@ -498,5 +409,97 @@ func (ns *nodeServer) cleanupMountPoint(ctx context.Context, volumeId string, mo
 	if err != nil {
 		return err
 	}
-	return ns.ossfsMounterFac.NewFuseMounter(ctx, volumeId, nil, false).Unmount(mountpoint)
+	return ns.ossfsMounterFac.NewFuseMounter(&mounter.FusePodContext{
+		Context:   ctx,
+		Namespace: "kube-system",
+		NodeName:  ns.nodeName,
+		VolumeId:  volumeId,
+	}, false).Unmount(mountpoint)
+}
+
+func parseOptions(volumeContext, secrets map[string]string, volumeCapability *csi.VolumeCapability) *Options {
+	opts := &Options{}
+	opts.UseSharedPath = true
+	opts.FuseType = OssFsType
+	for key, value := range volumeContext {
+		key = strings.ToLower(key)
+		if key == "bucket" {
+			opts.Bucket = strings.TrimSpace(value)
+		} else if key == "url" {
+			opts.URL = strings.TrimSpace(value)
+		} else if key == "otheropts" {
+			opts.OtherOpts = strings.TrimSpace(value)
+		} else if key == "akid" {
+			opts.AkID = strings.TrimSpace(value)
+		} else if key == "aksecret" {
+			opts.AkSecret = strings.TrimSpace(value)
+		} else if key == "path" {
+			if v := strings.TrimSpace(value); v == "" {
+				opts.Path = "/"
+			} else {
+				opts.Path = v
+			}
+		} else if key == "usesharedpath" {
+			if useSharedPath, err := strconv.ParseBool(value); err == nil {
+				opts.UseSharedPath = useSharedPath
+			} else {
+				log.Warnf("invalid useSharedPath: %q", value)
+			}
+		} else if key == "authtype" {
+			opts.AuthType = strings.ToLower(strings.TrimSpace(value))
+		} else if key == "rolename" {
+			opts.RoleName = strings.TrimSpace(value)
+		} else if key == "rolearn" {
+			opts.RoleArn = strings.TrimSpace(value)
+		} else if key == "oidcproviderarn" {
+			opts.OidcProviderArn = strings.TrimSpace(value)
+		} else if key == "serviceaccountname" {
+			opts.ServiceAccountName = strings.TrimSpace(value)
+		} else if key == "secretproviderclass" {
+			opts.SecretProviderClass = strings.TrimSpace(value)
+		} else if key == "fusetype" {
+			opts.FuseType = strings.ToLower(strings.TrimSpace(value))
+		} else if key == "metricstop" {
+			opts.MetricsTop = strings.ToLower(strings.TrimSpace(value))
+		} else if key == "containernetworkfilesystem" {
+			opts.CNFSName = value
+		} else if key == optDirectAssigned {
+			opts.directAssigned, _ = strconv.ParseBool(strings.TrimSpace(value))
+		} else if key == "encrypted" {
+			opts.Encrypted = strings.ToLower(strings.TrimSpace(value))
+		} else if key == "kmskeyid" {
+			opts.KmsKeyId = value
+		}
+	}
+	// support set ak by secret
+	if opts.AkID == "" || opts.AkSecret == "" {
+		opts.AkID, opts.AkSecret = secrets[AkID], secrets[AkSecret]
+	}
+	switch volumeCapability.AccessMode.GetMode() {
+	case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER, csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
+		opts.ReadOnly = false
+	default:
+		opts.ReadOnly = true
+	}
+
+	if opts.Path == "" {
+		opts.Path = "/"
+	}
+	return opts
+}
+
+func setCNFSOptions(ctx context.Context, cnfsGetter cnfsv1beta1.CNFSGetter, opts *Options) error {
+	if opts.CNFSName == "" {
+		return nil
+	}
+	cnfs, err := cnfsGetter.GetCNFS(ctx, opts.CNFSName)
+	if err != nil {
+		return err
+	}
+	if cnfs.Status.FsAttributes.EndPoint == nil {
+		return fmt.Errorf("missing endpoint in status of CNFS %s", opts.CNFSName)
+	}
+	opts.Bucket = cnfs.Status.FsAttributes.BucketName
+	opts.URL = cnfs.Status.FsAttributes.EndPoint.Internal
+	return nil
 }

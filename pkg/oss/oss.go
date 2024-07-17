@@ -71,29 +71,6 @@ func NewDriver(nodeID, endpoint string, m metadata.MetadataProvider, runAsContro
 
 	d.driver = csiDriver
 
-	d.controllerServer = newControllerServer(d.driver)
-	if !runAsController {
-		d.nodeServer = newNodeServer(d.driver, m)
-	}
-	return d
-}
-
-func newControllerServer(driver *csicommon.CSIDriver) csi.ControllerServer {
-	clientset := kubernetes.NewForConfigOrDie(options.MustGetRestConfig())
-	c := &controllerServer{
-		client:                  clientset,
-		DefaultControllerServer: csicommon.NewDefaultControllerServer(driver),
-	}
-	return c
-}
-
-// newNodeServer init oss type of csi nodeServer
-func newNodeServer(driver *csicommon.CSIDriver, m metadata.MetadataProvider) *nodeServer {
-	nodeName := os.Getenv("KUBE_NODE_NAME")
-	if nodeName == "" {
-		log.Fatal("env KUBE_NODE_NAME is empty")
-	}
-
 	cfg := options.MustGetRestConfig()
 	clientset := kubernetes.NewForConfigOrDie(cfg)
 	cnfsGetter := cnfsv1beta1.NewCNFSGetter(dynamic.NewForConfigOrDie(cfg))
@@ -103,15 +80,31 @@ func newNodeServer(driver *csicommon.CSIDriver, m metadata.MetadataProvider) *no
 		log.Fatalf("failed to get configmap kube-system/csi-plugin: %v", err)
 	}
 
-	return &nodeServer{
-		DefaultNodeServer: csicommon.NewDefaultNodeServer(driver),
-		nodeName:          nodeName,
-		clientset:         clientset,
-		cnfsGetter:        cnfsGetter,
-		sharedPathLock:    utils.NewVolumeLocks(),
-		ossfsMounterFac:   mounter.NewContainerizedFuseMounterFactory(mounter.NewFuseOssfs(configmap, m), clientset, nodeName),
-		metadata:          m,
+	ossfsMounterFac := mounter.NewContainerizedFuseMounterFactory(mounter.NewFuseOssfs(configmap, m), clientset)
+
+	if runAsController {
+		d.controllerServer = &controllerServer{
+			client:                  clientset,
+			DefaultControllerServer: csicommon.NewDefaultControllerServer(d.driver),
+		}
+	} else {
+		nodeName := os.Getenv("KUBE_NODE_NAME")
+		if nodeName == "" {
+			log.Fatal("env KUBE_NODE_NAME is empty")
+		}
+
+		d.nodeServer = &nodeServer{
+			DefaultNodeServer: csicommon.NewDefaultNodeServer(d.driver),
+			nodeName:          nodeName,
+			clientset:         clientset,
+			cnfsGetter:        cnfsGetter,
+			sharedPathLock:    utils.NewVolumeLocks(),
+			ossfsMounterFac:   ossfsMounterFac,
+			metadata:          m,
+		}
 	}
+
+	return d
 }
 
 func (d *OSS) Run() {

@@ -24,9 +24,11 @@ import (
 	mountutils "k8s.io/mount-utils"
 )
 
-const fuseMountTimeout = time.Second * 30
-const fuseMountNamespace = "kube-system"
-const fuseServieAccountName = "csi-fuse-ossfs"
+const (
+	fuseMountTimeout      = time.Second * 30
+	fuseMountNamespace    = "kube-system"
+	fuseServieAccountName = "csi-fuse-ossfs"
+)
 
 const (
 	FuseTypeLabelKey          = "csi.alibabacloud.com/fuse-type"
@@ -56,10 +58,18 @@ const (
 	AuthTypeCSS  = "csi-secret-store"
 )
 
+type FusePodContext struct {
+	context.Context
+	Namespace  string
+	NodeName   string
+	VolumeId   string
+	AuthConfig *AuthConfig
+}
+
 type FuseMounterType interface {
 	name() string
 	addPodMeta(pod *corev1.Pod)
-	buildPodSpec(source, target, fstype string, authCfg *AuthConfig, options, mountFlags []string, nodeName, volumeId string) (corev1.PodSpec, error)
+	buildPodSpec(c *FusePodContext, source, target, fstype string, options, mountFlags []string) (corev1.PodSpec, error)
 }
 
 type FuseContainerConfig struct {
@@ -142,21 +152,14 @@ func extractFuseContainerConfig(configmap *corev1.ConfigMap, name string) (confi
 }
 
 type ContainerizedFuseMounterFactory struct {
-	fuseType            FuseMounterType
-	nodeName, namespace string
-	client              kubernetes.Interface
+	fuseType FuseMounterType
+	client   kubernetes.Interface
 }
 
-func NewContainerizedFuseMounterFactory(
-	fuseType FuseMounterType,
-	client kubernetes.Interface,
-	nodeName string,
-) *ContainerizedFuseMounterFactory {
+func NewContainerizedFuseMounterFactory(fuseType FuseMounterType, client kubernetes.Interface) *ContainerizedFuseMounterFactory {
 	return &ContainerizedFuseMounterFactory{
-		fuseType:  fuseType,
-		nodeName:  nodeName,
-		namespace: fuseMountNamespace,
-		client:    client,
+		fuseType: fuseType,
+		client:   client,
 	}
 }
 
@@ -164,34 +167,22 @@ func NewContainerizedFuseMounterFactory(
 // When atomic is true, mount operations are responsible for cleaning up inflight fuse pods in case a timeout error occurs.
 // This implies that mount operations will either succeed when the fuse pod is ready,
 // or fail and ensure that no fuse pods are left behind.
-func (fac *ContainerizedFuseMounterFactory) NewFuseMounter(
-	ctx context.Context, volumeId string, authCfg *AuthConfig, atomic bool) *ContainerizedFuseMounter {
+func (fac *ContainerizedFuseMounterFactory) NewFuseMounter(c *FusePodContext, atomic bool) *ContainerizedFuseMounter {
 	return &ContainerizedFuseMounter{
-		ctx:       ctx,
-		atomic:    atomic,
-		volumeId:  volumeId,
-		nodeName:  fac.nodeName,
-		namespace: fac.namespace,
-		authCfg:   authCfg,
-		client:    fac.client,
-		log: logrus.WithFields(logrus.Fields{
-			"fuse-type": fac.fuseType.name(),
-			"volume-id": volumeId,
-		}),
+		atomic:          atomic,
+		client:          fac.client,
+		log:             logrus.WithFields(logrus.Fields{"fuse-type": fac.fuseType.name(), "volume-id": c.VolumeId}),
+		FusePodContext:  c,
 		FuseMounterType: fac.fuseType,
 		Interface:       mountutils.New(""),
 	}
 }
 
 type ContainerizedFuseMounter struct {
-	ctx       context.Context
-	atomic    bool
-	volumeId  string
-	nodeName  string
-	namespace string
-	authCfg   *AuthConfig
-	client    kubernetes.Interface
-	log       *logrus.Entry
+	atomic bool
+	client kubernetes.Interface
+	log    *logrus.Entry
+	*FusePodContext
 	FuseMounterType
 	mountutils.Interface
 }
@@ -203,19 +194,19 @@ func (mounter *ContainerizedFuseMounter) Mount(source string, target string, fst
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(mounter.ctx, fuseMountTimeout)
+	ctx, cancel := context.WithTimeout(mounter.Context, fuseMountTimeout)
 	defer cancel()
-	if mounter.authCfg != nil && mounter.authCfg.AuthType == AuthTypeRRSA {
-		if mounter.authCfg.RrsaConfig.ServiceAccountName == fuseServieAccountName {
+	if mounter.AuthConfig != nil && mounter.AuthConfig.AuthType == AuthTypeRRSA {
+		if mounter.AuthConfig.RrsaConfig.ServiceAccountName == fuseServieAccountName {
 			err := mounter.checkServiceAccount(ctx)
 			if err != nil {
 				return err
 			}
 		} else {
-			mounter.log.Infof("serviceAccountName has set to %s, skip service account check", mounter.authCfg.RrsaConfig.ServiceAccountName)
+			mounter.log.Infof("serviceAccountName has set to %s, skip service account check", mounter.AuthConfig.RrsaConfig.ServiceAccountName)
 		}
 	}
-	err := mounter.launchFusePod(ctx, source, target, fstype, mounter.authCfg, options, nil)
+	err := mounter.launchFusePod(ctx, source, target, fstype, options, nil)
 	if err != nil {
 		return err
 	}
@@ -232,7 +223,7 @@ func (mounter *ContainerizedFuseMounter) Mount(source string, target string, fst
 }
 
 func (mounter *ContainerizedFuseMounter) Unmount(target string) error {
-	err := mounter.cleanupFusePods(mounter.ctx, target)
+	err := mounter.cleanupFusePods(mounter.Context, target)
 	if err != nil {
 		return fmt.Errorf("cleanup fuse pods: %w", err)
 	}
@@ -242,26 +233,26 @@ func (mounter *ContainerizedFuseMounter) Unmount(target string) error {
 func (mounter *ContainerizedFuseMounter) labelsAndListOptionsFor(target string) (map[string]string, metav1.ListOptions) {
 	labels := map[string]string{
 		FuseTypeLabelKey:          mounter.name(),
-		FuseVolumeIdLabelKey:      mounter.volumeId,
+		FuseVolumeIdLabelKey:      mounter.VolumeId,
 		FuseMountPathHashLabelKey: computeMountPathHash(target),
 	}
 	listOptions := metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("spec.nodeName", mounter.nodeName).String(),
+		FieldSelector: fields.OneTermEqualSelector("spec.nodeName", mounter.NodeName).String(),
 		LabelSelector: metav1.FormatLabelSelector(&metav1.LabelSelector{MatchLabels: labels}),
 	}
 	return labels, listOptions
 }
 
 func (mounter *ContainerizedFuseMounter) checkServiceAccount(ctx context.Context) error {
-	_, err := mounter.client.CoreV1().ServiceAccounts(mounter.namespace).Get(ctx, mounter.authCfg.RrsaConfig.ServiceAccountName, metav1.GetOptions{})
+	_, err := mounter.client.CoreV1().ServiceAccounts(mounter.Namespace).Get(ctx, mounter.AuthConfig.RrsaConfig.ServiceAccountName, metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("check service account %s for RRSA: %w", mounter.authCfg.RrsaConfig.ServiceAccountName, err)
+		return fmt.Errorf("check service account %s for RRSA: %w", mounter.AuthConfig.RrsaConfig.ServiceAccountName, err)
 	}
 	return nil
 }
 
-func (mounter *ContainerizedFuseMounter) launchFusePod(ctx context.Context, source, target, fstype string, authCfg *AuthConfig, options, mountFlags []string) error {
-	podClient := mounter.client.CoreV1().Pods(mounter.namespace)
+func (mounter *ContainerizedFuseMounter) launchFusePod(ctx context.Context, source, target, fstype string, options, mountFlags []string) error {
+	podClient := mounter.client.CoreV1().Pods(mounter.Namespace)
 	labels, listOptions := mounter.labelsAndListOptionsFor(target)
 	podList, err := podClient.List(ctx, listOptions)
 	if err != nil {
@@ -303,7 +294,7 @@ func (mounter *ContainerizedFuseMounter) launchFusePod(ctx context.Context, sour
 		rawPod.Labels = labels
 		rawPod.Annotations = map[string]string{FuseMountPathAnnoKey: target, FuseSafeToEvictAnnoKey: "true"}
 		mounter.addPodMeta(&rawPod)
-		rawPod.Spec, err = mounter.buildPodSpec(source, target, fstype, authCfg, options, mountFlags, mounter.nodeName, mounter.volumeId)
+		rawPod.Spec, err = mounter.buildPodSpec(mounter.FusePodContext, source, target, fstype, options, mountFlags)
 		if err != nil {
 			return err
 		}
@@ -362,7 +353,7 @@ func (mounter *ContainerizedFuseMounter) launchFusePod(ctx context.Context, sour
 }
 
 func (mounter *ContainerizedFuseMounter) cleanupFusePods(ctx context.Context, target string) error {
-	podClient := mounter.client.CoreV1().Pods(mounter.namespace)
+	podClient := mounter.client.CoreV1().Pods(mounter.Namespace)
 	_, listOptions := mounter.labelsAndListOptionsFor(target)
 	podList, err := podClient.List(ctx, listOptions)
 	if err != nil {
