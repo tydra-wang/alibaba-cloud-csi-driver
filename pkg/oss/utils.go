@@ -128,19 +128,13 @@ func parseOtherOpts(otherOpts string) (mountOptions []string, err error) {
 func doMount(mounter mountutils.Interface, target string, opts Options, mountOptions []string) error {
 	var source string
 	source = fmt.Sprintf("%s:%s", opts.Bucket, opts.Path)
-	mountOptions = append(mountOptions, fmt.Sprintf("url=%s", opts.URL))
-	otherOpts, err := parseOtherOpts(opts.OtherOpts)
-	if err != nil {
-		return err
-	}
-	mountOptions = append(mountOptions, otherOpts...)
 	logger := log.WithFields(log.Fields{
 		"source":  source,
 		"target":  target,
 		"options": mountOptions,
 		"fstype":  opts.FuseType,
 	})
-	err = mounter.Mount(source, target, "", mountOptions)
+	err := mounter.Mount(source, target, "", mountOptions)
 	if err != nil {
 		logger.Errorf("failed to mount: %v", err)
 		return status.Errorf(codes.Internal, "failed to mount: %v", err)
@@ -175,4 +169,13 @@ func setTransmissionProtocol(originURL string) (URL string, modified bool) {
 		return "http://" + URL, true
 	}
 	return "https://" + URL, true
+}
+
+func getControllerPublishMountPath(volumeId string) string {
+	// TODO: how to remove these directories after ContollerUnpublish
+	return filepath.Join(utils.KubeletRootDir, "csi-plugins", driverName, "node", volumeId, "globalmount")
+}
+
+func getControllerPublishSecretName(volumeId, nodeName string) string {
+	return fmt.Sprintf("%s.%s", volumeId, nodeName)
 }

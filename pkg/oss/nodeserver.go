@@ -47,6 +47,7 @@ type nodeServer struct {
 	cnfsGetter      cnfsv1beta1.CNFSGetter
 	sharedPathLock  *utils.VolumeLocks
 	ossfsMounterFac *mounter.ContainerizedFuseMounterFactory
+	rawMounter      mountutils.Interface
 }
 
 // Options contains options for target oss
@@ -122,153 +123,52 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		return nil, err
 	}
 
-	opt := parseOptions(req.VolumeContext, req.Secrets, req.VolumeCapability)
+	notMnt, err := ns.rawMounter.IsLikelyNotMountPoint(mountPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(mountPath, os.ModePerm); err != nil {
+				return nil, status.Errorf(codes.Internal, "mkdir: %v", err)
+			}
+			notMnt = true
+		} else {
+			return nil, status.Errorf(codes.Internal, "check mountpoint: %v", err)
+		}
+	}
+	if !notMnt {
+		log.Infof("NodePublishVolume: %s already mounted", mountPath)
+	}
+
+	controllerPublishPath := req.PublishContext["controllerPublishPath"]
+	// TODO: metrics file
+	if controllerPublishPath != "" {
+		log.Infof("NodePublishVolume: controller publish path detected: %s", controllerPublishPath)
+		notMnt, err := ns.rawMounter.IsLikelyNotMountPoint(controllerPublishPath)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "check controller publish mount path: %v", err)
+		}
+		if notMnt {
+			return nil, status.Errorf(codes.Internal, "controller publish mount path not monuted: %v", controllerPublishPath)
+		}
+		if err := ns.rawMounter.Mount(controllerPublishPath, mountPath, "", []string{"bind"}); err != nil {
+			return nil, status.Errorf(codes.Internal, "bind mount: %v", err)
+		}
+		log.Infof("NodePublishVolume: bind mounted: %s", mountPath)
+
+		return &csi.NodePublishVolumeResponse{}, nil
+	}
+
+	opt := parseOptions(req)
 	if err := setCNFSOptions(ctx, ns.cnfsGetter, opt); err != nil {
 		return nil, err
-	}
-	if req.Readonly {
-		opt.ReadOnly = true
 	}
 	// check parameters
 	if err := checkOssOptions(opt); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, err.Error())
 	}
 
-	argStr := fmt.Sprintf("Bucket: %s, url: %s, , OtherOpts: %s, Path: %s, UseSharedPath: %s, authType: %s, encrypted: %s, kmsid: %s",
-		opt.Bucket, opt.URL, opt.OtherOpts, opt.Path, strconv.FormatBool(opt.UseSharedPath), opt.AuthType, opt.Encrypted, opt.KmsKeyId)
-	log.Infof("NodePublishVolume:: Starting Oss Mount: %s", argStr)
-
 	if opt.directAssigned {
 		return ns.publishDirectVolume(ctx, req, opt)
 	}
-
-	authCfg := &mounter.AuthConfig{AuthType: opt.AuthType, SecretProviderClassName: opt.SecretProviderClass}
-	if opt.AuthType == mounter.AuthTypeRRSA {
-		rrsaCfg, err := getRRSAConfig(opt, ns.metadata)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "Get RoleArn and OidcProviderArn for RRSA error: %v", err)
-		}
-		authCfg.RrsaConfig = rrsaCfg
-	}
-
-	// When useSharedPath options is set to false,
-	// mount operations need to be atomic to ensure that no fuse pods are left behind in case of failure.
-	// Because kubelet will not call NodeUnpublishVolume when NodePublishVolume never succeeded.
-	ossMounter := ns.ossfsMounterFac.NewFuseMounter(&mounter.FusePodContext{
-		Context:    ctx,
-		Namespace:  "kube-system",
-		NodeName:   ns.nodeName,
-		VolumeId:   req.VolumeId,
-		AuthConfig: authCfg,
-	}, !opt.UseSharedPath)
-
-	notMnt, err := mountutils.IsNotMountPoint(ossMounter, mountPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if err := os.MkdirAll(mountPath, os.ModePerm); err != nil {
-				log.Errorf("NodePublishVolume: mkdir %s: %v", mountPath, err)
-				return nil, status.Error(codes.Internal, err.Error())
-			}
-			notMnt = true
-		} else {
-			log.Errorf("NodePublishVolume: check mountpoint %s: %v", mountPath, err)
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-	}
-	if !notMnt {
-		log.Infof("NodePublishVolume: %s already mounted", mountPath)
-		return &csi.NodePublishVolumeResponse{}, nil
-	}
-
-	mountOptions, err := opt.MakeMountOptions(req.VolumeCapability)
-	if err != nil {
-		return nil, err
-	}
-
-	regionID, _ := ns.metadata.Get(metadata.RegionID)
-	switch opt.AuthType {
-	case mounter.AuthTypeSTS:
-		mountOptions = append(mountOptions, GetRAMRoleOption())
-	case mounter.AuthTypeRRSA:
-		if regionID == "" {
-			mountOptions = append(mountOptions, "rrsa_endpoint=https://sts.aliyuncs.com")
-		} else {
-			mountOptions = append(mountOptions, fmt.Sprintf("rrsa_endpoint=https://sts-vpc.%s.aliyuncs.com", regionID))
-		}
-	case mounter.AuthTypeCSS:
-	default:
-		// ossfs fuse pod will mount the secret to access credentials
-		err := mounter.SetupOssfsCredentialSecret(ctx, ns.clientset, ns.nodeName, req.VolumeId, opt.Bucket, opt.AkID, opt.AkSecret)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "failed to setup ossfs credential secret: %v", err)
-		}
-	}
-
-	if regionID == "" {
-		log.Warnf("NodePublishVolume:: failed to get region id from both env and metadata, use original URL: %s", opt.URL)
-	} else if url, done := setNetworkType(opt.URL, regionID); done {
-		log.Warnf("NodePublishVolume:: setNetworkType: modified URL from %s to %s", opt.URL, url)
-		opt.URL = url
-	}
-	if url, done := setTransmissionProtocol(opt.URL); done {
-		log.Warnf("NodePublishVolume:: setTransmissionProtocol: modified URL from %s to %s", opt.URL, url)
-		opt.URL = url
-	}
-
-	if opt.UseSharedPath {
-		sharedPath := GetGlobalMountPath(req.GetVolumeId())
-		notMnt, err := ossMounter.IsLikelyNotMountPoint(sharedPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				if err := os.MkdirAll(sharedPath, os.ModePerm); err != nil {
-					log.Errorf("NodePublishVolume: mkdir %s: %v", sharedPath, err)
-					return nil, status.Error(codes.Internal, err.Error())
-				}
-				notMnt = true
-			} else if mountutils.IsCorruptedMnt(err) {
-				log.Warnf("Umount corrupted mountpoint %s", sharedPath)
-				err := mountutils.New("").Unmount(sharedPath)
-				if err != nil {
-					return nil, status.Errorf(codes.Internal, "umount corrupted mountpoint %s: %v", sharedPath, err)
-				}
-				notMnt = true
-			} else {
-				log.Errorf("NodePublishVolume: check mountpoint %s: %v", sharedPath, err)
-				return nil, status.Error(codes.Internal, err.Error())
-			}
-		}
-		if notMnt {
-			// serialize node publish operations on the same volume when using sharedpath
-			if lock := ns.sharedPathLock.TryAcquire(req.VolumeId); !lock {
-				log.Errorf("NodePublishVolume: aborted because failed to acquire volume %s lock", req.VolumeId)
-				return nil, status.Errorf(codes.Aborted, "NodePublishVolume operation on shared path of volume %s already exists", req.VolumeId)
-			}
-			defer ns.sharedPathLock.Release(req.VolumeId)
-			utils.WriteSharedMetricsInfo(metricsPathPrefix, req, OssFsType, "oss", opt.Bucket, sharedPath)
-			if err := doMount(ossMounter, sharedPath, *opt, mountOptions); err != nil {
-				log.Errorf("NodePublishVolume: failed to mount")
-				return nil, err
-			}
-		} else {
-			log.Infof("NodePublishVolume: sharedpath %s already mounted", sharedPath)
-		}
-		log.Infof("NodePublishVolume:: Start mount operation from source [%s] to dest [%s]", sharedPath, mountPath)
-		if err := ossMounter.Mount(sharedPath, mountPath, "", []string{"bind"}); err != nil {
-			log.Errorf("Ossfs mount error: %v", err.Error())
-			return nil, errors.New("Create oss volume fail: " + err.Error())
-		}
-	} else {
-		metricsTop := defaultMetricsTop
-		if opt.MetricsTop != "" {
-			metricsTop = opt.MetricsTop
-		}
-		utils.WriteMetricsInfo(metricsPathPrefix, req, metricsTop, OssFsType, "oss", opt.Bucket)
-		if err := doMount(ossMounter, mountPath, *opt, mountOptions); err != nil {
-			return nil, err
-		}
-	}
-
-	log.Infof("NodePublishVolume: mounted oss successfully, volume %s, targetPath: %s", req.VolumeId, mountPath)
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
@@ -333,7 +233,7 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	if isDirectVolumePath(mountPoint) {
 		return ns.unPublishDirectVolume(ctx, req)
 	}
-	err = ns.cleanupMountPoint(ctx, req.VolumeId, req.TargetPath)
+	err = mountutils.CleanupMountWithForce(mountPoint, ns.rawMounter.(mountutils.MounterForceUnmounter), true, time.Minute)
 	if err != nil {
 		log.Errorf("NodeUnpublishVolume: failed to unmount %q: %v", mountPoint, err)
 		return nil, status.Errorf(codes.Internal, "failed to unmount target %q: %v", mountPoint, err)
@@ -356,7 +256,7 @@ func (ns *nodeServer) NodeUnstageVolume(
 	log.Infof("NodeUnstageVolume: starting to unmount volume, volumeId: %s, target: %v", req.VolumeId, req.StagingTargetPath)
 	// unmount for sharedPath
 	mountpoint := GetGlobalMountPath(req.VolumeId)
-	err := ns.cleanupMountPoint(ctx, req.VolumeId, mountpoint)
+	err := mountutils.CleanupMountWithForce(mountpoint, ns.rawMounter.(mountutils.MounterForceUnmounter), true, time.Minute)
 	if err != nil {
 		log.Errorf("NodeUnstageVolume: failed to unmount %q: %v", mountpoint, err)
 		return nil, status.Errorf(codes.Internal, "failed to unmount target %q: %v", mountpoint, err)
@@ -374,31 +274,18 @@ func (ns *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandV
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
-func (ns *nodeServer) cleanupMountPoint(ctx context.Context, volumeId string, mountpoint string) error {
-	m := mountutils.New("")
-	var err error
-	forceUnmounter, ok := m.(mountutils.MounterForceUnmounter)
-	if ok {
-		err = mountutils.CleanupMountWithForce(mountpoint, forceUnmounter, true, time.Minute)
-	} else {
-		err = mountutils.CleanupMountPoint(mountpoint, m, true)
-	}
-	if err != nil {
-		return err
-	}
-	return ns.ossfsMounterFac.NewFuseMounter(&mounter.FusePodContext{
-		Context:   ctx,
-		Namespace: "kube-system",
-		NodeName:  ns.nodeName,
-		VolumeId:  volumeId,
-	}, false).Unmount(mountpoint)
+type publishRequest interface {
+	GetVolumeCapability() *csi.VolumeCapability
+	GetReadonly() bool
+	GetVolumeContext() map[string]string
+	GetSecrets() map[string]string
 }
 
-func parseOptions(volumeContext, secrets map[string]string, volumeCapability *csi.VolumeCapability) *Options {
+func parseOptions(req publishRequest) *Options {
 	opts := &Options{}
 	opts.UseSharedPath = true
 	opts.FuseType = OssFsType
-	for key, value := range volumeContext {
+	for key, value := range req.GetVolumeContext() {
 		key = strings.ToLower(key)
 		if key == "bucket" {
 			opts.Bucket = strings.TrimSpace(value)
@@ -450,13 +337,18 @@ func parseOptions(volumeContext, secrets map[string]string, volumeCapability *cs
 	}
 	// support set ak by secret
 	if opts.AkID == "" || opts.AkSecret == "" {
+		secrets := req.GetSecrets()
 		opts.AkID, opts.AkSecret = secrets[AkID], secrets[AkSecret]
 	}
-	switch volumeCapability.AccessMode.GetMode() {
-	case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER, csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
-		opts.ReadOnly = false
-	default:
+	if req.GetReadonly() {
 		opts.ReadOnly = true
+	} else if capability := req.GetVolumeCapability(); capability != nil {
+		switch capability.AccessMode.GetMode() {
+		case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER, csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
+			opts.ReadOnly = false
+		default:
+			opts.ReadOnly = true
+		}
 	}
 
 	if opts.Path == "" {
@@ -511,5 +403,7 @@ func (o *Options) MakeMountOptions(volumeCapability *csi.VolumeCapability) ([]st
 	if o.MetricsTop != "" {
 		mountOptions = append(mountOptions, fmt.Sprintf("metrics_top=%s", o.MetricsTop))
 	}
+
+	mountOptions = append(mountOptions, fmt.Sprintf("url=%s", o.URL))
 	return mountOptions, nil
 }

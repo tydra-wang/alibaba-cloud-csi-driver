@@ -18,6 +18,7 @@ package oss
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -34,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	mountutils "k8s.io/mount-utils"
 )
 
 const (
@@ -50,23 +52,27 @@ type OSS struct {
 }
 
 // NewDriver init oss type of csi driver
-func NewDriver(nodeID, endpoint string, m metadata.MetadataProvider, runAsController bool) *OSS {
+func NewDriver(endpoint string, m metadata.MetadataProvider, runAsController bool) *OSS {
 	log.Infof("Driver: %v version: %v", driverName, version.VERSION)
+	nodeName := os.Getenv("KUBE_NODE_NAME")
+	if nodeName == "" {
+		log.Fatal("env KUBE_NODE_NAME is empty")
+	}
+	instanceId := metadata.MustGet(m, metadata.InstanceID)
+	nodeId := fmt.Sprintf("%s:%s", nodeName, instanceId)
 
 	d := &OSS{}
 	d.endpoint = endpoint
 
-	if nodeID == "" {
-		nodeID = utils.RetryGetMetaData(InstanceID)
-		log.Infof("Use node id : %s", nodeID)
-	}
-	csiDriver := csicommon.NewCSIDriver(driverName, version.VERSION, nodeID)
+	csiDriver := csicommon.NewCSIDriver(driverName, version.VERSION, nodeId)
 	csiDriver.AddVolumeCapabilityAccessModes([]csi.VolumeCapability_AccessMode_Mode{
 		csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
 	})
 	csiDriver.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_UNKNOWN,
+		csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
+		csi.ControllerServiceCapability_RPC_PUBLISH_READONLY,
 	})
 
 	d.driver = csiDriver
@@ -88,11 +94,6 @@ func NewDriver(nodeID, endpoint string, m metadata.MetadataProvider, runAsContro
 			DefaultControllerServer: csicommon.NewDefaultControllerServer(d.driver),
 		}
 	} else {
-		nodeName := os.Getenv("KUBE_NODE_NAME")
-		if nodeName == "" {
-			log.Fatal("env KUBE_NODE_NAME is empty")
-		}
-
 		d.nodeServer = &nodeServer{
 			DefaultNodeServer: csicommon.NewDefaultNodeServer(d.driver),
 			nodeName:          nodeName,
@@ -101,6 +102,7 @@ func NewDriver(nodeID, endpoint string, m metadata.MetadataProvider, runAsContro
 			sharedPathLock:    utils.NewVolumeLocks(),
 			ossfsMounterFac:   ossfsMounterFac,
 			metadata:          m,
+			rawMounter:        mountutils.New(""),
 		}
 	}
 

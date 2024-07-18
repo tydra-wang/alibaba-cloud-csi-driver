@@ -23,10 +23,15 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	csicommon "github.com/kubernetes-csi/drivers/pkg/csi-common"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cloud/metadata"
+	cnfsv1beta1 "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/cnfs/v1beta1"
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -35,6 +40,9 @@ import (
 type controllerServer struct {
 	client kubernetes.Interface
 	*csicommon.DefaultControllerServer
+	cnfsGetter      cnfsv1beta1.CNFSGetter
+	metadata        metadata.MetadataProvider
+	ossfsMounterFac *mounter.ContainerizedFuseMounterFactory
 }
 
 func getOssVolumeOptions(req *csi.CreateVolumeRequest) *Options {
@@ -138,13 +146,143 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 }
 
 func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
-	log.Infof("ControllerUnpublishVolume is called, do nothing by now")
+	log.Infof("ControllerUnpublishVolume: volume %s on node %s", req.VolumeId, req.NodeId)
+	nodeName, instanceId, _ := strings.Cut(req.NodeId, ":")
+	if nodeName == "" || instanceId == "" {
+		log.Warnf("ControllerUnpublishVolume: skip %s for unexpected nodeId: %q", req.VolumeId, req.NodeId)
+		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	}
+
+	mountPath := getControllerPublishMountPath(req.VolumeId)
+	err := cs.ossfsMounterFac.NewFuseMounter(&mounter.FusePodContext{
+		Context:   ctx,
+		Namespace: "ack-csi-fuse",
+		NodeName:  nodeName,
+		VolumeId:  req.VolumeId,
+	}, false).Unmount(mountPath)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to unmount: %v", err)
+	}
+
+	secretName := getControllerPublishSecretName(req.VolumeId, nodeName)
+	err = cs.client.CoreV1().Secrets("ack-csi-fuse").Delete(ctx, secretName, metav1.DeleteOptions{})
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.Internal, "failed to delete secret %s: %v", secretName, err)
+		}
+	} else {
+		log.Infof("ControllerPublishVolume: deleted secret %s", secretName)
+	}
+
+	log.Infof("ControllerUnpublishVolume: successfully unpublished volume %s on node %s", req.VolumeId, req.NodeId)
 	return &csi.ControllerUnpublishVolumeResponse{}, nil
 }
 
 func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
-	log.Infof("ControllerPublishVolume is called, do nothing by now")
-	return &csi.ControllerPublishVolumeResponse{}, nil
+	log.Infof("ControllerPublishVolume: volume %s on node %s", req.VolumeId, req.NodeId)
+	// TODO: skip controller publish for virtual kubelet nodes
+	nodeName, instanceId, _ := strings.Cut(req.NodeId, ":")
+	if nodeName == "" || instanceId == "" {
+		return nil, status.Error(codes.InvalidArgument, "unexpected nodeId")
+	}
+
+	opts := parseOptions(req)
+	if err := setCNFSOptions(ctx, cs.cnfsGetter, opts); err != nil {
+		return nil, err
+	}
+	// check parameters
+	if err := checkOssOptions(opts); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, err.Error())
+	}
+	if opts.directAssigned {
+		log.Infof("ControllerPublishVolume: skip DirectVolume: %s", req.VolumeId)
+		return &csi.ControllerPublishVolumeResponse{}, nil
+	}
+	if !opts.UseSharedPath {
+		return nil, status.Errorf(codes.InvalidArgument, "useSharedPath=false no longer supported")
+	}
+
+	authCfg := &mounter.AuthConfig{AuthType: opts.AuthType, SecretProviderClassName: opts.SecretProviderClass}
+	if opts.AuthType == mounter.AuthTypeRRSA {
+		rrsaCfg, err := getRRSAConfig(opts, cs.metadata)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "Get RoleArn and OidcProviderArn for RRSA error: %v", err)
+		}
+		authCfg.RrsaConfig = rrsaCfg
+	}
+
+	mountOptions, err := opts.MakeMountOptions(req.VolumeCapability)
+	if err != nil {
+		return nil, err
+	}
+
+	regionID, _ := cs.metadata.Get(metadata.RegionID)
+	switch opts.AuthType {
+	case mounter.AuthTypeSTS:
+		// TODO: add sts mount option
+	case mounter.AuthTypeRRSA:
+		if regionID == "" {
+			mountOptions = append(mountOptions, "rrsa_endpoint=https://sts.aliyuncs.com")
+		} else {
+			mountOptions = append(mountOptions, fmt.Sprintf("rrsa_endpoint=https://sts-vpc.%s.aliyuncs.com", regionID))
+		}
+	case mounter.AuthTypeCSS:
+	default:
+		secret := corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      getControllerPublishSecretName(req.VolumeId, nodeName),
+				Namespace: "ack-csi-fuse",
+			},
+			StringData: req.Secrets,
+		}
+		client := cs.client.CoreV1().Secrets("ack-csi-fuse")
+		_, err := client.Create(ctx, &secret, metav1.CreateOptions{})
+		if err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				_, err = client.Update(ctx, &secret, metav1.UpdateOptions{})
+				if err != nil {
+					return nil, status.Errorf(codes.Internal, "failed to update secret: %v", err)
+				}
+				log.Infof("ControllerPublishVolume: updated secret %s", secret.Name)
+			} else {
+				return nil, status.Errorf(codes.Internal, "failed to create secret: %v", err)
+			}
+		} else {
+			log.Infof("ControllerPublishVolume: created secret %s", secret.Name)
+		}
+
+		log.Infof("ControllerPublishVolume: applied secret for volume %s", req.VolumeId)
+	}
+
+	if regionID == "" {
+		log.Warnf("ControllerPublishVolume: failed to get region id from both env and metadata, use original URL: %s", opts.URL)
+	} else if url, done := setNetworkType(opts.URL, regionID); done {
+		log.Warnf("ControllerPublishVolume: setNetworkType: modified URL from %s to %s", opts.URL, url)
+		opts.URL = url
+	}
+	if url, done := setTransmissionProtocol(opts.URL); done {
+		log.Warnf("ControllerPublishVolume: setTransmissionProtocol: modified URL from %s to %s", opts.URL, url)
+		opts.URL = url
+	}
+
+	mountPath := getControllerPublishMountPath(req.VolumeId)
+	err = cs.ossfsMounterFac.NewFuseMounter(&mounter.FusePodContext{
+		Context:    ctx,
+		Namespace:  "ack-csi-fuse",
+		NodeName:   nodeName,
+		VolumeId:   req.VolumeId,
+		AuthConfig: authCfg,
+	}, false).Mount(fmt.Sprintf("%s:%s", opts.Bucket, opts.Path), mountPath, opts.FuseType, mountOptions)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to mount: %v", err)
+	}
+
+	log.Infof("ControllerPublishVolume: successfully published volume %s on node %s", req.VolumeId, req.NodeId)
+	return &csi.ControllerPublishVolumeResponse{
+		PublishContext: map[string]string{
+			"controllerPublishPath": mountPath,
+		},
+	}, nil
 }
 
 func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
