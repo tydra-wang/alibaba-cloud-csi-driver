@@ -55,11 +55,14 @@ type OSS struct {
 func NewDriver(endpoint string, m metadata.MetadataProvider, runAsController bool) *OSS {
 	log.Infof("Driver: %v version: %v", driverName, version.VERSION)
 	nodeName := os.Getenv("KUBE_NODE_NAME")
-	if nodeName == "" {
-		log.Fatal("env KUBE_NODE_NAME is empty")
+	nodeId := "controller" // csi-common needs non-empty value for controllerserver init
+	if !runAsController {
+		if nodeName == "" {
+			log.Fatal("env KUBE_NODE_NAME is empty")
+		}
+		instanceId := metadata.MustGet(m, metadata.InstanceID)
+		nodeId = fmt.Sprintf("%s:%s", nodeName, instanceId)
 	}
-	instanceId := metadata.MustGet(m, metadata.InstanceID)
-	nodeId := fmt.Sprintf("%s:%s", nodeName, instanceId)
 
 	d := &OSS{}
 	d.endpoint = endpoint
