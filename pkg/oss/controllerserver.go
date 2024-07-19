@@ -300,3 +300,8 @@ func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 	log.Infof("ControllerExpandVolume is called, do nothing now")
 	return &csi.ControllerExpandVolumeResponse{}, nil
 }
+
+func (cs *controllerServer) ControllerGetCapabilities(ctx context.Context, req *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
+	log.Info("1")
+	return cs.DefaultControllerServer.ControllerGetCapabilities(ctx, req)
+}
