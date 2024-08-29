@@ -62,7 +62,7 @@ func newControllerServer(config *internal.ControllerConfig) (*controllerServer, 
 func validateCreateVolumeRequest(req *csi.CreateVolumeRequest) error {
 	valid, err := utils.CheckRequestArgs(req.GetParameters())
 	if !valid {
-		return status.Errorf(codes.InvalidArgument, err.Error())
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	return nil
 }

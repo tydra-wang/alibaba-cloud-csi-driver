@@ -19,11 +19,12 @@ package nas
 import (
 	"context"
 	"encoding/json"
-	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/interfaces"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/interfaces"
 
 	sdk "github.com/alibabacloud-go/nas-20170626/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
@@ -226,7 +227,7 @@ func (cs *subpathController) DeleteVolume(ctx context.Context, req *csi.DeleteVo
 	// If StorageClass not found, always archive on delete.
 	sc, err := cs.config.KubeClient.StorageV1().StorageClasses().Get(ctx, pv.Spec.StorageClassName, metav1.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
-		return nil, status.Errorf(codes.Internal, err.Error())
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	archive := true
 	if sc != nil {
