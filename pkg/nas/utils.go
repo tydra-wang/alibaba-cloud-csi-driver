@@ -28,6 +28,7 @@ import (
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/losetup"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
+	utilsio "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils/io"
 	log "github.com/sirupsen/logrus"
 	mountutils "k8s.io/mount-utils"
 )
@@ -48,6 +49,7 @@ const (
 	// see https://help.aliyun.com/zh/nas/modify-the-maximum-number-of-concurrent-nfs-requests
 	TcpSlotTableEntries      = "/proc/sys/sunrpc/tcp_slot_table_entries"
 	TcpSlotTableEntriesValue = "128\n"
+	bdiReadAheadKB           = "bdi/read_ahead_kb"
 )
 
 // RoleAuth define STS Token Response
@@ -296,4 +298,30 @@ func cleanupMountpoint(mounter mountutils.Interface, mountPath string) (err erro
 		err = mountutils.CleanupMountPoint(mountPath, mounter, false)
 	}
 	return
+}
+
+func setSysConfigs(mountPath string, sysConfigs map[string]string) error {
+	if len(sysConfigs) == 0 {
+		return nil
+	}
+	m, err := utilsio.NewSysConfigManagerForNFS(mountPath)
+	if err != nil {
+		return err
+	}
+	err = m.SetMulti(sysConfigs)
+	if err != nil {
+		return err
+	}
+
+	if value, ok := sysConfigs[bdiReadAheadKB]; ok {
+		// nfs-utils versions later than nfs-utils-2.3.3-57.0.1.al8.1 have udev rules for nfsrahead enabled,
+		// which automatically set a default read_ahead_kb after the bdi subsystem add event.
+		// To avoid conflicts, we need to introduce a delay and then recheck our custom settings.
+		time.Sleep(time.Second * 2)
+		err := m.Set(bdiReadAheadKB, value)
+		if err != nil {
+			return fmt.Errorf("recheck %s: %w", bdiReadAheadKB, err)
+		}
+	}
+	return nil
 }

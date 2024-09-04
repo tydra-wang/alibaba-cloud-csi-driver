@@ -36,6 +36,7 @@ import (
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/losetup"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/nas/internal"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
+	utilsio "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils/io"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils/rund/directvolume"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
@@ -83,6 +84,7 @@ type Options struct {
 	MountProtocol string `json:"mountProtocol"`
 	ClientType    string `json:"clientType"`
 	FSType        string `json:"fsType"`
+	SysConfigs    map[string]string
 }
 
 // RunvNasOptions struct definition
@@ -222,6 +224,15 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		case "mountprotocol":
 			opt.MountProtocol = strings.TrimSpace(value)
 		}
+	}
+
+	var err error
+	opt.SysConfigs, err = utilsio.ParseSysConfigs(req.VolumeContext["sysConfig"], func(key string) bool {
+		// only support setting bdi/read_ahead_kb
+		return key == bdiReadAheadKB
+	})
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	if cnfsName != "" {
@@ -450,6 +461,14 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	log.Infof("NodePublishVolume:: Volume %s Mount success on mountpoint: %s", req.VolumeId, mountPath)
+
+	// set sysconfigs
+	// Note that NodePublishVolume will still succeed even if errors occur while setting sysconfig.
+	// Otherwise, we would need to unmount the mount point to maintain the atomicity of NodePublishVolume,
+	// as kubelet may not call NodeUnpublish if NodePublishVolume never succeeds.
+	if err := setSysConfigs(mountPath, opt.SysConfigs); err != nil {
+		log.WithField("target", mountPath).Errorf("Set sysconfig: %v", err)
+	}
 
 	return &csi.NodePublishVolumeResponse{}, nil
 }
