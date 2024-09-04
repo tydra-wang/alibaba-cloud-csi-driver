@@ -611,18 +611,22 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 
 	// sysConfig
 	if value, ok := req.VolumeContext[SysConfigTag]; ok {
-		configList := strings.Split(strings.TrimSpace(value), ",")
-		for _, configStr := range configList {
-			key, value, found := strings.Cut(configStr, "=")
-			if !found {
-				log.Errorf("NodeStageVolume: Volume Block System Config with format error: %s", configStr)
-				return nil, status.Error(defaultErrCode, "NodeStageVolume: Volume Block System Config with format error "+configStr)
-			}
-			err := DefaultDeviceManager.WriteSysfs(device, key, []byte(value))
+		sysConfigs, err := utilsio.ParseSysConfigs(value, func(key string) bool {
+			return strings.HasPrefix(key, "queue/")
+		})
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if len(sysConfigs) > 0 {
+			log.Infof("Setting sysconfig for device %s: %v", device, sysConfigs)
+			manager, err := utilsio.NewSysConfigManagerForDisk(device)
 			if err != nil {
-				return nil, status.Errorf(defaultErrCode, "NodeStageVolume: set sysConfig %s=%s failed: %v", key, value, err)
+				return nil, status.Errorf(defaultErrCode, "init sysconfig manager: %v", err)
 			}
-			log.Infof("NodeStageVolume: set sysConfig %s=%s", key, value)
+			err = manager.SetMulti(sysConfigs)
+			if err != nil {
+				return nil, status.Errorf(defaultErrCode, "set sysconfig: %v", err)
+			}
 		}
 	}
 	omitfsck := false
