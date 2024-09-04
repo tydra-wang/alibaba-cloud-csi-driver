@@ -38,6 +38,7 @@ import (
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/common"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/disk/crds"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils"
+	utilsio "github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/utils/io"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -164,6 +165,9 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		if value, ok := req.Parameters[DiskSnapshotID]; ok && value != "" {
 			snapshotID = value
 		}
+	}
+	if _, err := utilsio.ParseSysConfigs(req.Parameters[SysConfigTag], allowSysConfigKey); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	diskVol, err := getDiskVolumeOptions(req)
