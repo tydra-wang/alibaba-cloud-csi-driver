@@ -10,20 +10,19 @@ import (
 )
 
 type ProxyMounter struct {
-	socketPath string
+	client client.Client
 	mountutils.Interface
 }
 
 func NewProxyMounter(socketPath string, inner mountutils.Interface) *ProxyMounter {
 	return &ProxyMounter{
-		socketPath: socketPath,
-		Interface:  inner,
+		client:    client.NewClient(socketPath),
+		Interface: inner,
 	}
 }
 
 func (m *ProxyMounter) MountWithSecrets(source, target, fstype string, options []string, secrets map[string]string) error {
-	dclient := client.NewClient(m.socketPath)
-	resp, err := dclient.Mount(&proxy.MountRequest{
+	resp, err := m.client.Mount(&proxy.MountRequest{
 		Source:  source,
 		Target:  target,
 		Fstype:  fstype,
