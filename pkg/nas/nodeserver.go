@@ -379,6 +379,9 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 	if !notMounted {
 		log.Infof("NodePublishVolume: %s already mounted", mountPath)
+		if err := setSysConfigs(mountPath, opt.SysConfigs); err != nil {
+			return nil, status.Errorf(codes.Aborted, "set sysconfig: %v", err)
+		}
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
@@ -463,11 +466,8 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	log.Infof("NodePublishVolume:: Volume %s Mount success on mountpoint: %s", req.VolumeId, mountPath)
 
 	// set sysconfigs
-	// Note that NodePublishVolume will still succeed even if errors occur while setting sysconfig.
-	// Otherwise, we would need to unmount the mount point to maintain the atomicity of NodePublishVolume,
-	// as kubelet may not call NodeUnpublish if NodePublishVolume never succeeds.
 	if err := setSysConfigs(mountPath, opt.SysConfigs); err != nil {
-		log.WithField("target", mountPath).Errorf("Set sysconfig: %v", err)
+		return nil, status.Errorf(codes.Aborted, "set sysconfig: %v", err)
 	}
 
 	return &csi.NodePublishVolumeResponse{}, nil
