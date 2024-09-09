@@ -29,6 +29,8 @@ const (
 	// Only effective when DiskADController is also enabled.
 	DiskParallelDetach featuregate.Feature = "DiskParallelDetach"
 
+	AlinasMountProxy featuregate.Feature = "AlinasMountProxy"
+
 	UpdatedOssfsVersion featuregate.Feature = "UpdatedOssfsVersion"
 
 	RundCSIProtocol3 featuregate.Feature = "RundCSIProtocol3"
@@ -36,21 +38,25 @@ const (
 
 var (
 	FunctionalMutableFeatureGate = featuregate.NewFeatureGate()
-	defaultDiskFeatureGate       = map[featuregate.Feature]featuregate.FeatureSpec{
+	diskFeatures                 = map[featuregate.Feature]featuregate.FeatureSpec{
 		DiskADController:   {Default: false, PreRelease: featuregate.Alpha},
 		DiskParallelAttach: {Default: false, PreRelease: featuregate.Alpha},
 		DiskParallelDetach: {Default: false, PreRelease: featuregate.Alpha},
 	}
-	defaultOSSFeatureGate = map[featuregate.Feature]featuregate.FeatureSpec{
+	ossFeatures = map[featuregate.Feature]featuregate.FeatureSpec{
 		UpdatedOssfsVersion: {Default: true, PreRelease: featuregate.Beta},
 	}
-	defaultNASFeatureGate = map[featuregate.Feature]featuregate.FeatureSpec{
+	nasFeatures = map[featuregate.Feature]featuregate.FeatureSpec{
+		AlinasMountProxy: {Default: false, PreRelease: featuregate.Alpha},
+	}
+	otherFeatures = map[featuregate.Feature]featuregate.FeatureSpec{
 		RundCSIProtocol3: {Default: false, PreRelease: featuregate.Alpha},
 	}
 )
 
 func init() {
-	runtime.Must(FunctionalMutableFeatureGate.Add(defaultDiskFeatureGate))
-	runtime.Must(FunctionalMutableFeatureGate.Add(defaultOSSFeatureGate))
-	runtime.Must(FunctionalMutableFeatureGate.Add(defaultNASFeatureGate))
+	runtime.Must(FunctionalMutableFeatureGate.Add(diskFeatures))
+	runtime.Must(FunctionalMutableFeatureGate.Add(ossFeatures))
+	runtime.Must(FunctionalMutableFeatureGate.Add(nasFeatures))
+	runtime.Must(FunctionalMutableFeatureGate.Add(otherFeatures))
 }

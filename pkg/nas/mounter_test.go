@@ -2,9 +2,10 @@ package nas
 
 import (
 	"errors"
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	mountutils "k8s.io/mount-utils"
-	"testing"
 )
 
 type baseMockMounter struct{}
@@ -56,8 +57,8 @@ func TestNewNasMounter(t *testing.T) {
 
 func TestNasMounter_MountSuccess(t *testing.T) {
 	nasMounter := &NasMounter{
-		Interface:   successMockMounter{},
-		fuseMounter: successMockMounter{},
+		Interface:        successMockMounter{},
+		connectorMounter: successMockMounter{},
 	}
 	err := nasMounter.Mount("", "", "nas", []string{})
 	assert.NoError(t, err)
@@ -65,8 +66,8 @@ func TestNasMounter_MountSuccess(t *testing.T) {
 
 func TestNasMounter_FuseMountError(t *testing.T) {
 	nasMounter := &NasMounter{
-		Interface:   errorMockMounter{},
-		fuseMounter: errorMockMounter{},
+		Interface:        errorMockMounter{},
+		connectorMounter: errorMockMounter{},
 	}
 	err := nasMounter.Mount("", "", "cpfs", []string{})
 	assert.Error(t, err)

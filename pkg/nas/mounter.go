@@ -1,14 +1,20 @@
 package nas
 
 import (
+	"os"
+
+	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/features"
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter"
 	"k8s.io/klog/v2"
 	mountutils "k8s.io/mount-utils"
 )
 
+const defaultAlinasSocket = "/run/cnfs/alinas-mounter.sock"
+
 type NasMounter struct {
 	mountutils.Interface
-	fuseMounter mountutils.Interface
+	connectorMounter mountutils.Interface
+	proxyMounter     mountutils.Interface
 }
 
 func (m *NasMounter) Mount(source string, target string, fstype string, options []string) (err error) {
@@ -19,8 +25,14 @@ func (m *NasMounter) Mount(source string, target string, fstype string, options 
 		"fstype", fstype,
 	)
 	switch fstype {
-	case "alinas", "cpfs", "cpfs-nfs":
-		err = m.fuseMounter.Mount(source, target, fstype, options)
+	case "cpfs":
+		err = m.connectorMounter.Mount(source, target, fstype, options)
+	case "alinas", "cpfs-nfs":
+		if features.FunctionalMutableFeatureGate.Enabled(features.AlinasMountProxy) {
+			err = m.proxyMounter.Mount(source, target, fstype, options)
+		} else {
+			err = m.connectorMounter.Mount(source, target, fstype, options)
+		}
 	default:
 		err = m.Interface.Mount(source, target, fstype, options)
 	}
@@ -34,8 +46,13 @@ func (m *NasMounter) Mount(source string, target string, fstype string, options 
 
 func NewNasMounter() mountutils.Interface {
 	inner := mountutils.New("")
+	socket := os.Getenv("ALINAS_SOCKET")
+	if socket == "" {
+		socket = defaultAlinasSocket
+	}
 	return &NasMounter{
-		Interface:   inner,
-		fuseMounter: mounter.NewConnectorMounter(inner, ""),
+		Interface:        inner,
+		connectorMounter: mounter.NewConnectorMounter(inner, ""),
+		proxyMounter:     mounter.NewProxyMounter(socket, inner),
 	}
 }
