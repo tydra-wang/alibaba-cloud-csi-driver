@@ -83,6 +83,9 @@ type Options struct {
 	MountProtocol string `json:"mountProtocol"`
 	ClientType    string `json:"clientType"`
 	FSType        string `json:"fsType"`
+	// ak for access point
+	AKId     string
+	AKSecret string
 }
 
 // RunvNasOptions struct definition
@@ -223,6 +226,8 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			opt.MountProtocol = strings.TrimSpace(value)
 		}
 	}
+	opt.AKId = req.Secrets["akId"]
+	opt.AKSecret = req.Secrets["akSecret"]
 
 	if cnfsName != "" {
 		cnfs, err := ns.config.CNFSGetter.GetCNFS(ctx, cnfsName)

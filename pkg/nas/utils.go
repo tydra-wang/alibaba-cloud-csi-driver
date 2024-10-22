@@ -75,6 +75,10 @@ func doMount(mounter mountutils.Interface, opt *Options, targetPath, volumeId, p
 	if opt.Options != "" {
 		combinedOptions = append(combinedOptions, opt.Options)
 	}
+	if opt.AKId != "" {
+		combinedOptions = addTLSMountOptions(combinedOptions)
+		combinedOptions = append(combinedOptions, fmt.Sprintf("ram,access_key_id=%s,access_key_secret=%s", opt.AKId, opt.AKSecret))
+	}
 
 	switch opt.ClientType {
 	case EFCClient:
