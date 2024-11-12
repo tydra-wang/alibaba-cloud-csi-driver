@@ -108,7 +108,16 @@ func doMount(mounter mountutils.Interface, opt *Options, targetPath, volumeId, p
 			mountFstype = "alinas"
 			// must enable tls when using accesspoint
 			combinedOptions = addTLSMountOptions(combinedOptions)
-		} else {
+		}
+		if opt.MountProtocol == "efc" {
+			if !strings.HasSuffix(opt.Server, "cpfs.aliyuncs.com") {
+				return errors.New("please use efc through CNFS")
+			}
+			// use efc to mount cpfs for lingjun
+			mountFstype = "alinas"
+			combinedOptions = []string{"efc,protocol=efc,net=tcp,fstype=cpfs"}
+		}
+		if mountFstype == "" {
 			mountFstype = opt.MountProtocol
 		}
 		isPathNotFound = func(err error) bool {
