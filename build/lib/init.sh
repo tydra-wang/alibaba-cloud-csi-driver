@@ -281,7 +281,7 @@ if [ "$ARCH" = "x86_64" ] && [ "$run_nas" = "true" ]; then
         # cpfs-nas nas-rich-client common rpm
         echo "installing aliyun-alinas-utils"
         if [ "$HAS_YUM" = "true" ]; then
-            PKG=aliyun-alinas-utils-1.1-8.20240527201444.2012cc.al7.noarch.rpm
+            PKG=aliyun-alinas-utils-public.noarch.rpm
         elif [ "$HAS_APT" = "true" ]; then
             PKG=aliyun-alinas-utils-1.1-8.deb
         else
@@ -300,11 +300,11 @@ if [ "$ARCH" = "x86_64" ] && [ "$run_nas" = "true" ]; then
     if [ $install_efc = "true" ]; then
         # nas-rich-client rpm
         echo "installing alinas-efc"
-        cp /root/alinas-efc-1.2-3.x86_64.rpm /host/etc/csi-tool/
-        ${HOST_CMD} yum install -y /etc/csi-tool/alinas-efc-1.2-3.x86_64.rpm
+        cp /root/alinas-efc-public-for-ecs.release.x86_64.rpm /host/etc/csi-tool/
+        ${HOST_CMD} yum install -y alinas-efc-public-for-ecs.release.x86_64.rpm
 
-        echo "checking alinas-efc-1.2-3.x86_64 installed"
-        ${HOST_CMD} rpm -q alinas-efc-1.2-3.x86_64 || exit 1
+        echo "checking alinas-efc installed"
+        ${HOST_CMD} rpm -q alinas-efc || exit 1
         echo "starting aliyun-alinas-mount-watchdog"
         ${HOST_CMD} systemctl start aliyun-alinas-mount-watchdog || exit 1
     fi

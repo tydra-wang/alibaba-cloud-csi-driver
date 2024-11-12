@@ -22,9 +22,9 @@ ARG TARGETARCH
 WORKDIR /downloads
 RUN CURL="curl --remote-time --remote-name --fail" && \
     if [[ $TARGETARCH == "amd64" ]]; then \
-        $CURL -H "If-Match: D7AE0A7E48FBB6CF7BDB33C770B5EE0C" https://aliyun-alinas-eac.oss-cn-beijing.aliyuncs.com/alinas-efc-1.2-3.x86_64.rpm && \
-        $CURL -H "If-Match: 766DCD5965BF89DE927DC3975728F676" https://aliyun-encryption.oss-cn-beijing.aliyuncs.com/aliyun-alinas-utils-1.1-8.20240527201444.2012cc.al7.noarch.rpm && \
-        $CURL -H "If-Match: 259C07CF1C83C71DD78B705BC2E3FAE2" https://aliyun-encryption.oss-cn-beijing.aliyuncs.com/aliyun-alinas-utils-1.1-8.deb; \
+        $CURL -H "If-Match: 98C11593581B56C761CF26FF8EF0A256" https://aliyun-alinas-eac-cn-wulanchabu.oss-cn-wulanchabu.aliyuncs.com/aliyun-alinas-utils-public.noarch.rpm && \
+        $CURL -H "If-Match: 1A03AD6261F222C9EC623FE1AF13F59E" https://aliyun-alinas-eac-cn-wulanchabu.oss-cn-wulanchabu.aliyuncs.com/alinas-efc-public-for-ecs.release.x86_64.rpm && \
+        $CURL -H "If-Match: 259C07CF1C83C71DD78B705BC2E3FAE2" https://aliyun-encryption.oss-cn-beijing.aliyuncs.com/aliyun-alinas-utils-1.1-8.deb ; \
     fi
 
 FROM registry.eu-west-1.aliyuncs.com/acs/alinux:3-update as base
