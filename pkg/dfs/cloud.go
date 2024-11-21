@@ -32,6 +32,8 @@ const (
 	VSC_NORMARL  = "NORMAL"
 	VSC_CREATING = "CREATING"
 	VSC_INVALID  = "INVALID"
+
+	VSCType_Primary = "Primary"
 )
 
 type DFSClient interface {
@@ -111,7 +113,7 @@ func (d *dfsClient) DescribeAttachment(fileSystemId string, mountPointId string,
 	}
 
 	for _, vsc := range describeResponse.MountPoints[0].Instances[0].Vscs {
-		if vsc.VscType == "primary" {
+		if vsc.VscType == VSCType_Primary {
 			return &vsc, nil
 		}
 	}

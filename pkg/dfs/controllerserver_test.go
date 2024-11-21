@@ -48,13 +48,13 @@ func TestControllerPublishVolume(t *testing.T) {
 		mockClient.EXPECT().Attach(gomock.Eq(fileSystemId), gomock.Eq(mountPointId), gomock.Eq(req.NodeId)).Return(nil)
 		mockClient.EXPECT().DescribeAttachment(gomock.Eq(fileSystemId), gomock.Eq(mountPointId), gomock.Eq(req.NodeId)).Return(&VSC{
 			VscId:     "vsc1",
-			VscType:   "primary",
+			VscType:   VSCType_Primary,
 			VscStatus: VSC_CREATING,
 		}, nil)
 
 		mockClient.EXPECT().DescribeAttachment(gomock.Eq(fileSystemId), gomock.Eq(mountPointId), gomock.Eq(req.NodeId)).Return(&VSC{
 			VscId:     "vsc1",
-			VscType:   "primary",
+			VscType:   VSCType_Primary,
 			VscStatus: VSC_NORMARL,
 		}, nil)
 
@@ -73,7 +73,7 @@ func TestControllerPublishVolume(t *testing.T) {
 		mockClient.EXPECT().Attach(gomock.Eq(fileSystemId), gomock.Eq(mountPointId), gomock.Eq(req.NodeId)).Return(nil)
 		mockClient.EXPECT().DescribeAttachment(gomock.Eq(fileSystemId), gomock.Eq(mountPointId), gomock.Eq(req.NodeId)).Return(&VSC{
 			VscId:     "vsc1",
-			VscType:   "primary",
+			VscType:   VSCType_Primary,
 			VscStatus: VSC_INVALID,
 		}, nil)
 
