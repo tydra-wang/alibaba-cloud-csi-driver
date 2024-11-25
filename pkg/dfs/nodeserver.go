@@ -42,24 +42,43 @@ func newNodeServer(nodeId string) *nodeServer {
 }
 
 func (n *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
-	klog.Info("DFS NodePublishVolume")
+	klog.InfoS("DFS NodePublishVolume", "targetPath", req.TargetPath, "volumeId", req.VolumeId)
+	if req.GetVolumeCapability().GetBlock() == nil {
+		return nil, status.Error(codes.InvalidArgument, "Only block mode supported")
+	}
 	notMnt, err := n.mounter.IsLikelyNotMountPoint(req.TargetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(req.TargetPath, os.ModePerm); err != nil {
+			f, err := os.OpenFile(req.TargetPath, os.O_CREATE, 0644)
+			if err != nil {
 				return nil, status.Error(codes.Internal, err.Error())
 			}
+			defer f.Close()
 			notMnt = true
 		} else {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
 	if !notMnt {
-		klog.Infof("NodePublishVolume: %s already mounted", req.TargetPath)
+		klog.InfoS("NodePublishVolume: already mounted", "targetPath", req.TargetPath)
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
-	err = n.mounter.Mount("tmpfs", req.TargetPath, "tmpfs", []string{"ro"})
+	mountOptions := []string{"bind"}
+	if req.Readonly {
+		mountOptions = append(mountOptions, "ro")
+	}
+
+	devicePath := req.VolumeContext["devicePath"]
+	if devicePath == "" {
+		devicePath = req.PublishContext["devicePath"]
+	}
+
+	if devicePath == "" {
+		return nil, status.Error(codes.Internal, "devicePath not found in publishContext")
+	}
+
+	err = n.mounter.Mount(devicePath, req.TargetPath, "", mountOptions)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "Mount tmpfs: %v", err)
 	}
@@ -67,32 +86,10 @@ func (n *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishVo
 }
 
 func (n *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
-	klog.Info("DFS NodeUnpublishVolume")
+	klog.Info("DFS NodeUnpublishVolume", "targetPath", req.TargetPath)
 	err := mount.CleanupMountPoint(req.TargetPath, n.mounter, false)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "Cleanup mount point: %v", err)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
-}
-
-func (n *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
-	klog.Info("DFS NodeStageVolume")
-	return &csi.NodeStageVolumeResponse{}, nil
-}
-
-func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
-	klog.Info("DFS NodeUnstageVolume")
-	return &csi.NodeUnstageVolumeResponse{}, nil
-}
-
-func (n *nodeServer) NodeGetCapabilities(context context.Context, req *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
-	return &csi.NodeGetCapabilitiesResponse{Capabilities: []*csi.NodeServiceCapability{
-		{
-			Type: &csi.NodeServiceCapability_Rpc{
-				Rpc: &csi.NodeServiceCapability_RPC{
-					Type: csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
-				},
-			},
-		},
-	}}, nil
 }
