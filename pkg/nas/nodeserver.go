@@ -342,7 +342,8 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	}
 
 	// setup volume according to rund protocol 2.0 or 3.0
-	if opt.MountType == SkipMountType || runtimeVal == utils.RundRunTimeTag {
+	mountInRund := opt.MountType == SkipMountType || (runtimeVal == utils.RundRunTimeTag && opt.MountProtocol == MountProtocolNFS)
+	if mountInRund {
 		if features.FunctionalMutableFeatureGate.Enabled(features.RundCSIProtocol3) {
 			mountInfo := directvolume.MountInfo{
 				Source:     opt.Server,
