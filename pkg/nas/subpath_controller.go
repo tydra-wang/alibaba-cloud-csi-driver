@@ -128,7 +128,11 @@ func (cs *subpathController) CreateVolume(ctx context.Context, req *csi.CreateVo
 	}
 	// Only standard filesystems support "CreateDir" and "SetDirQuota" APIs.
 	// Subpaths of other types filesystems will be truly created when NodePublishVolume.
-	if filesystemType != cloud.FilesystemTypeStandard {
+	switch filesystemType {
+	case cloud.FilesystemTypeExtreme, cloud.FilesystemTypeCpfs:
+		if !strings.HasPrefix(path, "/share/") {
+			return nil, status.Error(codes.InvalidArgument, "must specify path under /share for cpfs or extreme filesystem")
+		}
 		return resp, nil
 	}
 	if cs.config.SkipSubpathCreation {
