@@ -141,8 +141,12 @@ func doMount(mounter mountutils.Interface, opt *Options, targetPath, volumeId, p
 	if err := mounter.Mount(rootSource, tmpPath, mountFstype, combinedOptions); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(tmpPath, relPath), os.ModePerm); err != nil {
+	createPath := filepath.Join(tmpPath, relPath)
+	if err := os.MkdirAll(createPath, os.ModePerm); err != nil {
 		return err
+	}
+	if err := os.Chmod(createPath, 0777); err != nil {
+		klog.ErrorS(err, "chmod failed", "path", opt.Path, "server", opt.Server)
 	}
 	if err := cleanupMountpoint(mounter, tmpPath); err != nil {
 		klog.Errorf("failed to cleanup tmp mountpoint %s: %v", tmpPath, err)
