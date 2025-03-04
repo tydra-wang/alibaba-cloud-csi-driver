@@ -19,7 +19,7 @@ import (
 )
 
 func init() {
-	server.RegisterMountHandler(NewMountHandler(), "ossfs")
+	server.RegisterMountHandler(NewMountHandler())
 }
 
 type MountHandler struct {
@@ -33,6 +33,14 @@ func NewMountHandler() *MountHandler {
 		pids: new(sync.Map),
 		raw:  mount.NewWithoutSystemd(""),
 	}
+}
+
+func (h *MountHandler) Name() string {
+	return "ossfs"
+}
+
+func (h *MountHandler) Fstypes() []string {
+	return []string{"ossfs"}
 }
 
 func (h *MountHandler) Mount(ctx context.Context, req *proxy.MountRequest) error {

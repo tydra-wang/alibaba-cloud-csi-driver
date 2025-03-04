@@ -18,13 +18,19 @@ const (
 )
 
 func init() {
-	server.RegisterMountHandler(&MountHandler{
-		mounter: mount.New(""),
-	}, fstypeCpfsNfs, fstypeAlinas)
+	server.RegisterMountHandler(&MountHandler{mounter: mount.New("")})
 }
 
 type MountHandler struct {
 	mounter mount.Interface
+}
+
+func (h *MountHandler) Name() string {
+	return "alinas"
+}
+
+func (h *MountHandler) Fstypes() []string {
+	return []string{fstypeAlinas, fstypeCpfsNfs}
 }
 
 func (h *MountHandler) Mount(ctx context.Context, req *proxy.MountRequest) error {

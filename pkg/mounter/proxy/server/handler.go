@@ -12,6 +12,7 @@ import (
 
 	"github.com/kubernetes-sigs/alibaba-cloud-csi-driver/pkg/mounter/proxy"
 	"golang.org/x/sys/unix"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 )
 
@@ -111,22 +112,30 @@ func handle(ctx context.Context, req *rawRequest) proxy.Response {
 	return proxy.Response{}
 }
 
-func Init() {
-	doForHandlers(func(m MountHandler) { m.Init() })
+func Init(enableMountHandlers []string) {
+	doForHandlers(func(m MountHandler) {
+		for _, fstype := range m.Fstypes() {
+			fstypeToHandler[fstype] = m
+		}
+		m.Init()
+	}, enableMountHandlers)
+
 }
 
-func Terminate() {
-	doForHandlers(func(m MountHandler) { m.Terminate() })
+func Terminate(enableMountHandlers []string) {
+	doForHandlers(func(m MountHandler) {
+		m.Terminate()
+	}, enableMountHandlers)
 }
 
-func doForHandlers(f func(m MountHandler)) {
+func doForHandlers(f func(m MountHandler), names []string) {
 	var wg sync.WaitGroup
-	for i := range mountHandlers {
+	for _, name := range sets.New[string](names...).UnsortedList() {
 		wg.Add(1)
-		go func(i int) {
+		go func() {
 			defer wg.Done()
-			f(mountHandlers[i])
-		}(i)
+			f(nameToHandler[name])
+		}()
 	}
 	wg.Wait()
 }

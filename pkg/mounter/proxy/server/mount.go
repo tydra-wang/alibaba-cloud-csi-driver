@@ -8,6 +8,8 @@ import (
 )
 
 type MountHandler interface {
+	Name() string
+	Fstypes() []string
 	Mount(ctx context.Context, req *proxy.MountRequest) error
 	Init()
 	Terminate()
@@ -15,14 +17,11 @@ type MountHandler interface {
 
 var (
 	fstypeToHandler = map[string]MountHandler{}
-	mountHandlers   []MountHandler
+	nameToHandler   = map[string]MountHandler{}
 )
 
-func RegisterMountHandler(handler MountHandler, fstypes ...string) {
-	mountHandlers = append(mountHandlers, handler)
-	for _, fstype := range fstypes {
-		fstypeToHandler[fstype] = handler
-	}
+func RegisterMountHandler(handler MountHandler) {
+	nameToHandler[handler.Name()] = handler
 }
 
 func handleMountRequest(ctx context.Context, req *proxy.MountRequest) error {
