@@ -9,6 +9,9 @@ RUN --mount=type=bind,target=. \
     go build -o /out/csi-mount-proxy-server ./cmd/mount-proxy-server && \
     go build -o /out/csi-mount-proxy-client ./cmd/mount-proxy-client
 
+
+# ossfs mount-proxy 
+
 FROM registry-cn-hangzhou.ack.aliyuncs.com/dev/alinux:3-update as oss
 ARG TARGETPLATFORM
 ARG OSSFS_VERSION=v1.91.3.ack.3
@@ -56,4 +59,28 @@ RUN set -ex; \
 
 COPY --link --from=builder /out/csi-mount-proxy* /usr/local/bin/
 ENTRYPOINT ["csi-mount-proxy-server"]
+
+
+# alinas mount-proxy 
+
+FROM registry-cn-hangzhou.ack.aliyuncs.com/dev/alinux:3-update as tini-downloader
+
+ENV TINI_VERSION v0.19.0
+ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
+ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini.asc /tini.asc
+RUN gpg --batch --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 595E85A6B1B4779EA4DAAEC70B588DFF0527A9B7 \
+    && gpg --batch --verify /tini.asc /tini
+RUN chmod +x /tini
+
+FROM registry-cn-hangzhou.ack.aliyuncs.com/dev/alinux:3-update as alinas
+# install tini
+COPY --link --from=tini-downloader /tini /sbin/tini
+# install alinas packages
+RUN --mount=type=bind,target=/build,source=build/mount-proxy \
+    yum install -y procps \
+    && yum install -y /build/*.rpm \
+    && yum clean all
+RUN cp -r /etc/aliyun /etc/aliyun-defaults
+COPY --link --from=builder /out/csi-mount-proxy* /usr/local/bin/
+ENTRYPOINT [ "tini", "--", "csi-mount-proxy-server" ]
 

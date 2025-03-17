@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cnfs-alinas-daemon
+  namespace: kube-system
+  labels:
+    app: cnfs-alinas-daemon
+spec:
+  selector:
+    matchLabels:
+      app: cnfs-alinas-daemon
+  template:
+    metadata:
+      labels:
+        app: cnfs-alinas-daemon
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: type
+                operator: NotIn
+                values:
+                - virtual-kubelet
+      hostNetwork: true
+      hostIPC: true
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: alinas
+        image: registry-vpc.cn-hangzhou.aliyuncs.com/jiafu-ack/csi-alinas:dev
+        args:
+        - -socket=/run/cnfs/alinas-mounter.sock
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /var/lib/kubelet
+          mountPropagation: Bidirectional
+          name: kubelet-dir
+        - mountPath: /run/cnfs
+          name: cnfs-dir
+        - mountPath: /etc/aliyun/cpfs
+          name: etc-dir
+          subPath: cpfs
+        - mountPath: /etc/aliyun/alinas
+          name: etc-dir
+          subPath: alinas
+        - mountPath: /var/log/aliyun/cpfs
+          name: log-dir
+          subPath: cpfs
+        - mountPath: /var/log/aliyun/alinas
+          name: log-dir
+          subPath: alinas
+        - mountPath: /var/run/alinas
+          name: cnfs-dir
+          subPath: alinas
+        - mountPath: /var/run/cpfs
+          name: cnfs-dir
+          subPath: cpfs
+        - mountPath: /var/run/efc
+          name: cnfs-dir
+          subPath: efc
+        - mountPath: /etc/hosts
+          name: hosts
+      volumes:
+      - name: kubelet-dir
+        hostPath:
+          path: /var/lib/kubelet
+      - name: cnfs-dir
+        hostPath:
+          path: /run/cnfs
+          type: DirectoryOrCreate
+      - name: etc-dir
+        hostPath:
+          path: /etc/cnfs
+          type: DirectoryOrCreate
+      - name: log-dir
+        hostPath:
+          path: /var/log/cnfs
+          type: DirectoryOrCreate
+      - name: hosts
+        hostPath:
+          path: /run/cnfs/alinas.hosts
+          type: FileOrCreate
