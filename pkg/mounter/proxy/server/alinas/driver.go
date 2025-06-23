@@ -74,7 +74,7 @@ func runCommandForever(command string, args ...string) {
 	}, time.Second)
 }
 
-// addAutoFallbackNFSMountOptions adds auto_fallback_nfs mount option when using efc
+// addAutoFallbackNFSMountOptions adds auto_fallback_nfs option when using efc in non-vsc mount.
 func addAutoFallbackNFSMountOptions(mountOptions []string) []string {
 	isEFC := false
 	isVSC := false
